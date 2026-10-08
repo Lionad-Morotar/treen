@@ -25,6 +25,11 @@ const FLOW_DIRECTIONS = 'lr|rl|tb|td|bt'
 /**
  * 其余图类型关键字。比较时统一小写，以吸收 OCR 的大小写漂移（sequencediagram → sequenceDiagram）。
  * 这些关键字后必须是空白或行尾，避免把 sequenceDiagrams 之类的前缀误当声明。
+ *
+ * 此表与下方结构判据是**成对**的：只有连线/关系算子能被 `hasStructuralLine` 命中的图类型才可入表，
+ * 否则声明的支持就是空的——块永远过不了结构判定，候选根本不会产出。像 gantt / pie / journey /
+ * mindmap / timeline / gitGraph 这类靠「任务行、冒号项、缩进」而非连线表达结构的类型，需要各自
+ * 的句式判据，当前不在本表内（列入待办，不占位假支持）。
  */
 const OTHER_DECLARATIONS = [
   'sequencediagram',
@@ -32,28 +37,6 @@ const OTHER_DECLARATIONS = [
   'statediagram-v2',
   'statediagram',
   'erdiagram',
-  'journey',
-  'gantt',
-  'pie',
-  'gitgraph',
-  'mindmap',
-  'timeline',
-  'quadrantchart',
-  'requirementdiagram',
-  'sankey-beta',
-  'xychart-beta',
-  'block-beta',
-  'packet-beta',
-  'architecture-beta',
-  'radar-beta',
-  'treemap-beta',
-  'c4context',
-  'c4container',
-  'c4component',
-  'c4dynamic',
-  'c4deployment',
-  'kanban',
-  'zenuml',
 ]
 
 const FLOW_DECLARATION = new RegExp(`^(flowchart|graph)\\s*(${FLOW_DIRECTIONS})?\\s*(;.*)?$`, 'i')
@@ -98,14 +81,41 @@ export function hasArrow(line: string): boolean {
   return ARROW_PATTERNS.some((pattern) => pattern.test(line))
 }
 
+/**
+ * 关系算子：classDiagram 与 erDiagram 的连线不带箭头头，靠两端花饰表达语义
+ * （继承 `<|--`、实现 `..|>`、依赖 `..>`、ER 基数 `||--o{`）。字形匹配即可，语义仍归 parse 裁决。
+ */
+const RELATION_PATTERNS: readonly RegExp[] = [
+  /<\|--/,
+  /-->?\|>/,
+  /<\|\.\./,
+  /\.\.\|?>/,
+  /\|\|--/,
+  /--\|\|/,
+  /\}\|--/,
+  /--\|\{/,
+  /\}o--/,
+  /--o\{/,
+  /\}o\.\./,
+  /\.\.o\{/,
+]
+
+/**
+ * 一行是否含图的结构行特征——箭头**或**关系算子。判据放宽的理由是代价不对称：误收的候选由下游
+ * `parse()` 一句话否掉，漏掉的图却会静默消失。
+ */
+export function hasStructuralLine(line: string): boolean {
+  return hasArrow(line) || RELATION_PATTERNS.some((pattern) => pattern.test(line))
+}
+
 const isBlank = (line: string): boolean => line.trim() === ''
 
 /**
  * 从文本里检出全部 mermaid 候选块。
  *
  * 块边界取「声明行起、直到首个空行为止的连续非空段」——OCR 出的图源码内部通常没有空行，
- * 空行是最稳的分隔信号。声明行之后必须至少有一行含箭头，否则不算候选。
- * 箭头行之后若不是空行而是紧邻正文，会被并进候选，交由下游 parse 裁决成败（不做猜测式裁剪）。
+ * 空行是最稳的分隔信号。声明行之后必须至少有一行含结构特征（箭头或关系算子），否则不算候选。
+ * 结构行之后若不是空行而是紧邻正文，会被并进候选，交由下游 parse 裁决成败（不做猜测式裁剪）。
  */
 export function detectMermaidBlocks(text: string): MermaidCandidate[] {
   const lines = text.split(/\r?\n/)
@@ -118,8 +128,8 @@ export function detectMermaidBlocks(text: string): MermaidCandidate[] {
       while (end + 1 < lines.length && !isBlank(lines[end + 1] ?? '')) {
         end += 1
       }
-      const hasStructuralLine = lines.slice(index + 1, end + 1).some(hasArrow)
-      if (hasStructuralLine) {
+      const hasStructure = lines.slice(index + 1, end + 1).some(hasStructuralLine)
+      if (hasStructure) {
         blocks.push({
           startLine: index,
           endLine: end,

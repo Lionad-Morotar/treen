@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectMermaidBlocks, hasArrow, isDiagramDeclaration } from '../src/mermaid/detect'
+import { detectMermaidBlocks, hasArrow, hasStructuralLine, isDiagramDeclaration } from '../src/mermaid/detect'
 import { PROSE_MENTIONING_GRAPH, SCREENSHOT_OCR_ROI, SCREENSHOT_SOURCE } from './mermaid-fixtures'
 
 describe('isDiagramDeclaration', () => {
@@ -21,6 +21,17 @@ describe('isDiagramDeclaration', () => {
 
   it('拒绝裸 mermaid 标识行（fence 标识不作声明）', () => {
     expect(isDiagramDeclaration('mermaid')).toBe(false)
+  })
+
+  it('只收录结构判据能命中的图类型：无连线类型不入表，不留假支持', () => {
+    expect(isDiagramDeclaration('classDiagram')).toBe(true)
+    expect(isDiagramDeclaration('erDiagram')).toBe(true)
+    expect(isDiagramDeclaration('stateDiagram-v2')).toBe(true)
+    // 这些类型靠任务行/冒号项/缩进表达结构，箭头与关系算子都命中不了，入表即假支持。
+    expect(isDiagramDeclaration('gantt')).toBe(false)
+    expect(isDiagramDeclaration('pie')).toBe(false)
+    expect(isDiagramDeclaration('mindmap')).toBe(false)
+    expect(isDiagramDeclaration('gitGraph')).toBe(false)
   })
 })
 
@@ -44,6 +55,20 @@ describe('hasArrow', () => {
     expect(hasArrow('graph LR')).toBe(false)
     expect(hasArrow('comb 模板 graph 步进扫')).toBe(false)
     expect(hasArrow('A -- B')).toBe(false)
+  })
+})
+
+describe('hasStructuralLine', () => {
+  it('classDiagram / erDiagram 的关系算子也算结构行', () => {
+    expect(hasStructuralLine('  Animal <|-- Duck')).toBe(true)
+    expect(hasStructuralLine('  Animal ..|> Flyer')).toBe(true)
+    expect(hasStructuralLine('  CUSTOMER ||--o{ ORDER : places')).toBe(true)
+    expect(hasStructuralLine('  PERSON }o--|| COMPANY : works')).toBe(true)
+  })
+
+  it('纯自然语言行与孤立连字符不算结构行', () => {
+    expect(hasStructuralLine('这句话没有任何连线')).toBe(false)
+    expect(hasStructuralLine('A -- B')).toBe(false)
   })
 })
 
@@ -104,5 +129,14 @@ describe('detectMermaidBlocks', () => {
     const blocks = detectMermaidBlocks('前置正文\n\ngraph LR\n  A --> B')
 
     expect(blocks[0]).toMatchObject({ startLine: 2, endLine: 3 })
+  })
+
+  it('classDiagram / erDiagram 靠关系算子检出，不依赖箭头', () => {
+    expect(detectMermaidBlocks('classDiagram\n  Animal <|-- Duck')).toHaveLength(1)
+    expect(detectMermaidBlocks('erDiagram\n  CUSTOMER ||--o{ ORDER : places')).toHaveLength(1)
+  })
+
+  it('无连线图类型当前不产出候选（类型专属句式判据尚未实现）', () => {
+    expect(detectMermaidBlocks('gantt\ntitle 排期\nsection 一期\n设计 :a1, 2026-01-01, 10d')).toEqual([])
   })
 })
