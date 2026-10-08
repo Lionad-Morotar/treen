@@ -493,21 +493,30 @@ async function verifyFreezeShortcutLifecycle(): Promise<void> {
     shortcuts,
     copyAccelerator: 'CommandOrControl+Shift+C',
     copySelection: () => {},
+    translateAccelerator: 'CommandOrControl+Shift+T',
+    translateSelection: () => {},
   })
 
   check('触发热键注册进真实快捷键表', controller.start() && globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
 
   handlers.get(DEFAULT_FREEZE_ACCELERATOR)?.()
   await waitUntil(() => controller.isFrozen())
-  check('冻结期退出键与拷贝键都已挂上', globalShortcut.isRegistered('Escape') && globalShortcut.isRegistered('CommandOrControl+Shift+C'))
+  check(
+    '冻结期退出键、拷贝键与翻译键都已挂上',
+    ['Escape', 'CommandOrControl+Shift+C', 'CommandOrControl+Shift+T'].every((accelerator) =>
+      globalShortcut.isRegistered(accelerator),
+    ),
+  )
 
   // 再按一次触发热键：真机上就是「取消」。
   handlers.get(DEFAULT_FREEZE_ACCELERATOR)?.()
   check('重复触发后不再处于冻结', !controller.isFrozen())
   check('覆盖窗已全部拆掉', closed.length === displays.length, { closed, displays: displays.length })
   check(
-    '冻结期的三个键都已从系统释放',
-    !['Escape', 'CommandOrControl+Shift+C'].some((accelerator) => globalShortcut.isRegistered(accelerator)),
+    '冻结期的三个辅助键都已从系统释放',
+    !['Escape', 'CommandOrControl+Shift+C', 'CommandOrControl+Shift+T'].some((accelerator) =>
+      globalShortcut.isRegistered(accelerator),
+    ),
   )
   check('触发热键本身留着，供下一次冻结', globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
 

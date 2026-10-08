@@ -1,11 +1,12 @@
 import { join } from 'node:path'
 import { BrowserWindow, app, dialog } from 'electron'
-import { createLogger } from '@treen/shared'
+import { createLogger, readDeepSeekKey } from '@treen/shared'
 import {
   DEFAULT_FREEZE_ACCELERATOR,
   ShortcutManager,
   createFreezeController,
   type FreezeController,
+  type SelectionSource,
 } from './freeze'
 import {
   captureFrames,
@@ -17,6 +18,12 @@ import {
 import { createCandidateBuilder } from './highlight/electron-candidates'
 import { createSelectionCopier } from './selection'
 import { frameCropWriter } from './selection/electron-clipboard'
+import {
+  createBatchTranslator,
+  createDeepSeekCompleter,
+  createTranslateSelection,
+  macOcrEngine,
+} from './translation'
 import { describeStartup } from './startup'
 
 const logger = createLogger('desktop')
@@ -30,17 +37,47 @@ function createMainWindow(): BrowserWindow {
 }
 
 /**
+ * 覆盖窗列表由控制器持有，且要到动作真发生的那一刻才是最新的，故按需现取。
+ * 拷贝与翻译共用一个读取口，兑现「翻译的目标选区与拷贝同源」。
+ */
+async function readOverlaySources(): Promise<readonly SelectionSource[]> {
+  const handles = freeze?.windows() ?? []
+  const sources = await Promise.all(handles.map((handle) => handle.readSelection()))
+  return sources.filter((source) => source !== null)
+}
+
+/**
+ * 装配翻译链路。缺 DeepSeek 密钥时不给翻译动作：冻结与拷贝照常可用，
+ * 而不是让一次配置缺失把整个冻结域拆掉。翻译结果先落日志（覆盖渲染是后续切片）。
+ */
+function createTranslateAction(): (() => Promise<void>) | undefined {
+  if (readDeepSeekKey() === undefined) {
+    logger.warn('未配置 DEEPSEEK_KEY，翻译键不注册；冻结与拷贝不受影响')
+    return undefined
+  }
+  const translate = createTranslateSelection({
+    readSources: readOverlaySources,
+    recognize: macOcrEngine(),
+    translate: createBatchTranslator({ complete: createDeepSeekCompleter(), logger }),
+    pointer: pointOfInterest,
+    logger,
+  })
+  return async () => {
+    const outcome = await translate()
+    if (outcome.kind === 'translated') {
+      const joined = outcome.blocks.map((block) => block.translation).join(' / ')
+      logger.info(`翻译：显示器 ${outcome.displayId}，${outcome.blocks.length} 段：${joined}`)
+    }
+  }
+}
+
+/**
  * 装配冻结域：真实 Electron 能力注入给纯逻辑控制器。
  * overlay.html 从 app 根取（`electron .` 下即包目录），不随构建产物走——它不进 main.js 的打包面。
  */
 function setupFreeze(): void {
   const copySelection = createSelectionCopier({
-    // 覆盖窗列表由控制器持有，且要到拷贝真发生的那一刻才是最新的，故按需现取。
-    readSources: async () => {
-      const handles = freeze?.windows() ?? []
-      const sources = await Promise.all(handles.map((handle) => handle.readSelection()))
-      return sources.filter((source) => source !== null)
-    },
+    readSources: readOverlaySources,
     writeCrop: frameCropWriter(logger),
     pointer: pointOfInterest,
     logger,
@@ -54,6 +91,7 @@ function setupFreeze(): void {
     pointOfInterest,
     buildCandidates: createCandidateBuilder({ logger }),
     copySelection,
+    translateSelection: createTranslateAction(),
     // 进入冻结失败（最常见的首跑原因是未授予屏幕录制权限）必须让用户看见，否则表现成「按了没反应」。
     reportError: (message) => {
       void dialog.showMessageBox({

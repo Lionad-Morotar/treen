@@ -47,6 +47,9 @@ importers:
       get-windows:
         specifier: ^9.3.0
         version: 9.3.0(encoding@0.1.13)(supports-color@10.2.2)
+      mac-ocr:
+        specifier: ^1.1.1
+        version: 1.1.1
     devDependencies:
       electron:
         specifier: ^44.7.0
@@ -2493,6 +2496,12 @@ packages:
 
   lru-cache@5.1.1:
     resolution: {integrity: sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==}
+
+  mac-ocr@1.1.1:
+    resolution: {integrity: sha512-2b5xNapCpbjAjntPZmP8nVEDe8zzOXVUAOerh36azjuJqZfDTt9y8flwCVrcG+0GL1ox4UcWUE4PtGH34ChChw==}
+    engines: {node: '>=22'}
+    os: [darwin]
+    hasBin: true
 
   magic-string-ast@1.0.3:
     resolution: {integrity: sha512-CvkkH1i81zl7mmb94DsRiFeG9V2fR2JeuK8yDgS8oiZSFa++wWLEgZ5ufEOyLHbvSbD1gTRKv9NdX69Rnvr9JA==}
@@ -6676,6 +6685,8 @@ snapshots:
   lru-cache@5.1.1:
     dependencies:
       yallist: 3.1.1
+
+  mac-ocr@1.1.1: {}
 
   magic-string-ast@1.0.3:
     dependencies:
