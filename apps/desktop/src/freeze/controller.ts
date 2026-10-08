@@ -9,6 +9,7 @@ import {
 } from './geometry'
 import { DEFAULT_FREEZE_ACCELERATOR, FREEZE_EXIT_ACCELERATOR } from './window-options'
 import type { ShortcutManager } from './shortcuts'
+import type { Candidate } from '../highlight/candidates'
 
 /**
  * 冻结态编排：进入时截屏、逐屏建覆盖窗；退出时无条件拆掉全部窗口与快捷键。
@@ -35,6 +36,8 @@ export interface OverlayWindowHandle {
   focus(): void
   close(): void
   isDestroyed(): boolean
+  /** 注入该屏的候选区域（悬停高亮与后续框选的数据源）；窗口已销毁时实现方须静默忽略。 */
+  setCandidates(candidates: readonly Candidate[]): void
 }
 
 export interface FreezeWindowFactory {
@@ -60,6 +63,11 @@ export interface FreezeControllerDeps {
   exitAccelerator?: string
   /** 决定进入冻结时聚焦哪块屏（通常取光标所在屏）；缺省聚焦第一块可用屏 */
   pointOfInterest?: () => Point
+  /**
+   * 按屏计算候选区域；缺省即不注入候选，冻结只铺画面。
+   * 结果不阻塞冻结进入——候选是叠在画面上的精修信息，画面与 Escape 出口都不该等它。
+   */
+  buildCandidates?(display: DisplayLike, frame: FreezeFrame): Promise<readonly Candidate[]>
   /** 把「用户触发但失败」的原因交给壳层呈现（对话框等）；纯 Logic 侧不决定呈现方式 */
   reportError?(message: string): void
   logger?: FreezeLogger
@@ -127,7 +135,9 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
         throw new Error('无法进入冻结态：未取到任何显示器的截屏')
       }
       for (const { display, source } of plan.matches) {
-        opened.push(deps.windows.create(display, source))
+        const handle = deps.windows.create(display, source)
+        opened.push(handle)
+        startCandidateBuild(handle, display, source)
       }
       created = opened
       frozen = true
@@ -149,6 +159,30 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       deps.reportError?.(message)
       throw error
     }
+  }
+
+  /**
+   * 后台把候选区域算出来并注入对应覆盖窗。
+   * 刻意不被 enter 等待：候选区域叠加在已经显示的画面之上，把它串进冻结进入的关键路径
+   * 只会推迟用户看到画面；失败也只记日志，不改变冻结仍在可用状态这一事实。
+   */
+  function startCandidateBuild(
+    handle: OverlayWindowHandle,
+    display: DisplayLike,
+    frame: FreezeFrame,
+  ): void {
+    const build = deps.buildCandidates
+    if (build === undefined) {
+      return
+    }
+    void build(display, frame)
+      .then((candidates) => {
+        handle.setCandidates(candidates)
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        deps.logger?.warn(`显示器 ${display.id} 的候选区域计算失败：${message}`)
+      })
   }
 
   function closeAll(windows: OverlayWindowHandle[]): void {

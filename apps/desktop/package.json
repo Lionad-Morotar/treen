@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@treen/ipc": "workspace:*",
-    "@treen/shared": "workspace:*"
+    "@treen/shared": "workspace:*",
+    "edge_det": "^0.1.3"
   },
   "devDependencies": {
     "electron": "^44.7.0",

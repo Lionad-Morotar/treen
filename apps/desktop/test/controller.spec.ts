@@ -6,6 +6,7 @@ import {
 } from '../src/freeze/controller'
 import { ShortcutManager, type ShortcutRegistrar } from '../src/freeze/shortcuts'
 import type { DisplayLike } from '../src/freeze/geometry'
+import type { Candidate } from '../src/highlight/candidates'
 
 const primary: DisplayLike = {
   id: 1,
@@ -60,6 +61,7 @@ function fakeWindows(failOnDisplayId?: number) {
           destroyed.add(id)
         }),
         isDestroyed: () => destroyed.has(id),
+        setCandidates: vi.fn(),
       }
       records.push({ handle, display, frame })
       return handle
@@ -84,6 +86,7 @@ interface HarnessOptions {
   failOnDisplayId?: number
   acceptAccelerator?: (accelerator: string) => boolean
   capture?: () => Promise<FreezeFrame[]>
+  buildCandidates?: (display: DisplayLike, frame: FreezeFrame) => Promise<readonly Candidate[]>
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -103,6 +106,7 @@ function createHarness(options: HarnessOptions = {}) {
     triggerAccelerator: TRIGGER,
     exitAccelerator: ESCAPE,
     pointOfInterest: () => options.pointer ?? { x: 10, y: 10 },
+    buildCandidates: options.buildCandidates,
     reportError,
     logger: { warn, info, error },
   })
@@ -280,6 +284,62 @@ describe('freeze controller: 失败与中断路径', () => {
 
     expect(harness.captureFrames).not.toHaveBeenCalled()
     expect(harness.controller.isFrozen()).toBe(false)
+  })
+})
+
+describe('freeze controller: 候选区域注入', () => {
+  function injected(record: WindowRecord | undefined): readonly Candidate[] | undefined {
+    if (record === undefined) {
+      return undefined
+    }
+    return vi.mocked(record.handle.setCandidates).mock.calls[0]?.[0]
+  }
+
+  it('把每块屏的候选区域送进该屏自己的覆盖窗', async () => {
+    const harness = createHarness({
+      buildCandidates: async (display) => [
+        { x: 1, y: 2, width: display.id, height: 3, source: 'edge' },
+      ],
+    })
+
+    await harness.controller.enter()
+    await vi.waitFor(() =>
+      expect(
+        harness.windows.records.every((r) => vi.mocked(r.handle.setCandidates).mock.calls.length === 1),
+      ).toBe(true),
+    )
+
+    expect(injected(harness.windows.records[0])).toEqual([
+      { x: 1, y: 2, width: 1, height: 3, source: 'edge' },
+    ])
+    expect(injected(harness.windows.records[1])).toEqual([
+      { x: 1, y: 2, width: 2, height: 3, source: 'edge' },
+    ])
+  })
+
+  it('候选区域计算失败只记日志，已经进入的冻结态与出口都不受影响', async () => {
+    const harness = createHarness({
+      buildCandidates: async () => {
+        throw new Error('边缘检测炸了')
+      },
+    })
+
+    await harness.controller.enter()
+    await vi.waitFor(() => expect(harness.warn).toHaveBeenCalled())
+    expect(harness.controller.isFrozen()).toBe(true)
+    expect(harness.shortcuts.handlers.has(ESCAPE)).toBe(true)
+    expect(harness.windows.records.every((r) => !r.handle.isDestroyed())).toBe(true)
+    expect(harness.warn.mock.calls.some(([message]) => String(message).includes('边缘检测炸了'))).toBe(true)
+  })
+
+  it('缺省不注入候选，冻结只铺画面', async () => {
+    const harness = createHarness()
+
+    await harness.controller.enter()
+
+    expect(
+      harness.windows.records.every((r) => vi.mocked(r.handle.setCandidates).mock.calls.length === 0),
+    ).toBe(true)
   })
 })
 

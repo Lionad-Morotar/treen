@@ -14,6 +14,7 @@ import {
   listDisplays,
   pointOfInterest,
 } from './freeze/electron-adapters'
+import { createEdgeCandidateBuilder } from './highlight/electron-candidates'
 import { describeStartup } from './startup'
 
 const logger = createLogger('desktop')
@@ -37,6 +38,7 @@ function setupFreeze(): void {
     windows: createOverlayWindowFactory(join(app.getAppPath(), 'overlay.html'), logger),
     shortcuts: new ShortcutManager(electronShortcutRegistrar()),
     pointOfInterest,
+    buildCandidates: createEdgeCandidateBuilder({ logger }),
     // 进入冻结失败（最常见的首跑原因是未授予屏幕录制权限）必须让用户看见，否则表现成「按了没反应」。
     reportError: (message) => {
       void dialog.showMessageBox({

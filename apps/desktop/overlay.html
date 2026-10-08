@@ -16,6 +16,12 @@
         background: transparent;
       }
 
+      :root {
+        /* 高亮色在此单点定义；科技向色板的集中定稿属渲染样式切片，届时只需改这一处。 */
+        --treen-highlight: rgba(8, 174, 236, 0.95);
+        --treen-highlight-fill: rgba(8, 174, 236, 0.12);
+      }
+
       #treen-freeze-frame {
         display: block;
         width: 100vw;
@@ -25,11 +31,39 @@
         -webkit-user-drag: none;
         pointer-events: none;
       }
+
+      /* 候选区域层：自身不吃事件，命中判定交给每个候选条自己（见下方布局说明）。 */
+      #treen-candidates {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      /*
+        候选区域条。默认态保留一条等宽透明边框，命中态只换颜色：
+        边框从无到有会改变盒模型尺寸，让边框线在切换时跳动一下；预置透明边框后两种状态
+        几何完全一致，命中只改颜色，不可能产生位移（透明边框占位纪律）。
+        位置与尺寸由主进程按显示器相对 DIP 写入，与窗口内 CSS px 同尺度。
+      */
+      .treen-candidate {
+        position: absolute;
+        box-sizing: border-box;
+        border: 1px solid transparent;
+        background-color: transparent;
+        pointer-events: auto;
+      }
+
+      .treen-candidate[data-hit="true"] {
+        border-color: var(--treen-highlight);
+        background-color: var(--treen-highlight-fill);
+      }
     </style>
   </head>
   <body>
     <!-- 冻结画面容器；data-testid 供真链路 smoke 定位与后续切片复用 -->
     <img id="treen-freeze-frame" data-testid="freeze-frame" alt="" />
+    <!-- 候选区域容器：一屏内所有可选中区域，悬停命中者加 data-hit -->
+    <div id="treen-candidates" data-testid="freeze-candidates"></div>
     <script>
       // 主进程在截图就绪后经 executeJavaScript 调用。挂在 window 上而非模块作用域，
       // 才能被 executeJavaScript 的全局求值命中；source 是 PNG data URL。
@@ -39,6 +73,72 @@
           img.src = dataUrl
         }
       }
+
+      var candidateLayer = document.getElementById('treen-candidates')
+      var hitElement = null
+
+      function clearHit() {
+        if (hitElement !== null) {
+          hitElement.removeAttribute('data-hit')
+          hitElement = null
+        }
+      }
+
+      /**
+       * 候选区域由主进程算好后整批送来：数组已按面积降序，小矩形在后、z-index 更大。
+       * 这个次序就是选中策略——层叠在上的是最具体的那条，浏览器自带的命中测试于是
+       * 直接给出「当前命中的候选区域」，渲染层不需要自己实现一套矩形包含判定。
+       */
+      window.__treenSetCandidates = function (candidates) {
+        clearHit()
+        candidateLayer.replaceChildren()
+        if (!Array.isArray(candidates)) {
+          return
+        }
+        for (var i = 0; i < candidates.length; i++) {
+          var candidate = candidates[i]
+          if (
+            !candidate ||
+            typeof candidate.x !== 'number' ||
+            typeof candidate.y !== 'number' ||
+            typeof candidate.width !== 'number' ||
+            typeof candidate.height !== 'number'
+          ) {
+            continue
+          }
+          var rect = document.createElement('div')
+          rect.className = 'treen-candidate'
+          rect.setAttribute('data-testid', 'freeze-candidate')
+          rect.setAttribute('data-source', String(candidate.source || 'edge'))
+          rect.setAttribute('data-index', String(i))
+          rect.style.zIndex = String(i)
+          rect.style.left = candidate.x + 'px'
+          rect.style.top = candidate.y + 'px'
+          rect.style.width = candidate.width + 'px'
+          rect.style.height = candidate.height + 'px'
+          candidateLayer.appendChild(rect)
+        }
+      }
+
+      /**
+       * 悬停高亮。用 elementFromPoint 而非 CSS :hover，是因为命中结果需要可被观测与断言
+       * （真链路 smoke 靠合成 mousemove 读数），后续「点击锁定候选区域」也要复用同一个命中判定。
+       */
+      document.addEventListener('mousemove', function (event) {
+        var element = document.elementFromPoint(event.clientX, event.clientY)
+        var next =
+          element && element.classList && element.classList.contains('treen-candidate')
+            ? element
+            : null
+        if (next === hitElement) {
+          return
+        }
+        clearHit()
+        if (next !== null) {
+          next.setAttribute('data-hit', 'true')
+          hitElement = next
+        }
+      })
     </script>
   </body>
 </html>
