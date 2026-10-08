@@ -22,6 +22,7 @@ const secondary: DisplayLike = {
 const TRIGGER = 'CommandOrControl+Shift+X'
 const ESCAPE = 'Escape'
 const COPY = 'CommandOrControl+C'
+const TRANSLATE = 'CommandOrControl+T'
 
 function fakeShortcuts(accept: (accelerator: string) => boolean = () => true) {
   const handlers = new Map<string, () => void>()
@@ -95,6 +96,7 @@ interface HarnessOptions {
   capture?: () => Promise<FreezeFrame[]>
   buildCandidates?: (display: DisplayLike, frame: FreezeFrame) => Promise<readonly Candidate[]>
   copySelection?: () => unknown
+  translateSelection?: () => unknown
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -115,6 +117,8 @@ function createHarness(options: HarnessOptions = {}) {
     exitAccelerator: ESCAPE,
     copyAccelerator: COPY,
     copySelection: options.copySelection,
+    translateAccelerator: TRANSLATE,
+    translateSelection: options.translateSelection,
     pointOfInterest: () => options.pointer ?? { x: 10, y: 10 },
     buildCandidates: options.buildCandidates,
     reportError,
@@ -504,6 +508,69 @@ describe('freeze controller: 冻结期拷贝键', () => {
     await expect(harness.controller.enter()).rejects.toThrow(/建窗失败/)
 
     expect(harness.shortcuts.handlers.has(COPY)).toBe(false)
+  })
+})
+
+describe('freeze controller: 冻结期翻译键', () => {
+  it('冻结期间注册翻译键，退出时释放', async () => {
+    const harness = createHarness({ translateSelection: vi.fn() })
+
+    await harness.controller.enter()
+    expect(harness.shortcuts.handlers.has(TRANSLATE)).toBe(true)
+
+    harness.controller.exit()
+
+    expect(harness.shortcuts.handlers.has(TRANSLATE)).toBe(false)
+  })
+
+  it('缺省不给翻译键，冻结仍然成立', async () => {
+    const harness = createHarness()
+
+    await harness.controller.enter()
+
+    expect(harness.shortcuts.handlers.has(TRANSLATE)).toBe(false)
+    expect(harness.controller.isFrozen()).toBe(true)
+  })
+
+  it('翻译键注册失败只记日志，不进冻结失败路径', async () => {
+    const harness = createHarness({
+      translateSelection: vi.fn(),
+      acceptAccelerator: (accelerator) => accelerator !== TRANSLATE,
+    })
+
+    await harness.controller.enter()
+
+    expect(harness.controller.isFrozen()).toBe(true)
+    expect(harness.shortcuts.handlers.has(ESCAPE)).toBe(true)
+    expect(harness.warn.mock.calls.some(([message]) => String(message).includes(TRANSLATE))).toBe(true)
+  })
+
+  it('按翻译键把动作交给注入的实现，异步失败收进日志且不拆掉冻结', async () => {
+    const translateSelection = vi.fn(async () => {
+      throw new Error('翻译链路炸了')
+    })
+    const harness = createHarness({ translateSelection })
+
+    await harness.controller.enter()
+    harness.shortcuts.handlers.get(TRANSLATE)?.()
+
+    await vi.waitFor(() => expect(translateSelection).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() =>
+      expect(harness.warn.mock.calls.some(([message]) => String(message).includes('翻译链路炸了'))).toBe(true),
+    )
+    expect(harness.controller.isFrozen()).toBe(true)
+  })
+
+  it('拷贝键与翻译键可并存，退出时一并释放', async () => {
+    const harness = createHarness({ copySelection: vi.fn(), translateSelection: vi.fn() })
+
+    await harness.controller.enter()
+    expect(harness.shortcuts.handlers.has(COPY)).toBe(true)
+    expect(harness.shortcuts.handlers.has(TRANSLATE)).toBe(true)
+
+    harness.controller.exit()
+
+    expect(harness.shortcuts.handlers.size).toBe(0)
   })
 })
 

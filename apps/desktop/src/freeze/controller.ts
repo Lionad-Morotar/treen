@@ -12,6 +12,7 @@ import {
   DEFAULT_FREEZE_ACCELERATOR,
   FREEZE_COPY_ACCELERATOR,
   FREEZE_EXIT_ACCELERATOR,
+  FREEZE_TRANSLATE_ACCELERATOR,
 } from './window-options'
 import type { ShortcutManager } from './shortcuts'
 import type { Candidate } from '../highlight/candidates'
@@ -90,6 +91,13 @@ export interface FreezeControllerDeps {
    * 拷贝失败不该把冻结态整个拆掉，但也不能静默无反应。
    */
   copySelection?: () => unknown
+  /** 翻译键；缺省用内置默认 */
+  translateAccelerator?: string
+  /**
+   * 冻结期把锁定选区送去 OCR 并翻译。缺省即不注册翻译键，与拷贝同一套失败处置：
+   * 返回值不被等待，同步抛错与 Promise 拒绝都收进日志，不拆掉冻结态。
+   */
+  translateSelection?: () => unknown
   /** 决定进入冻结时聚焦哪块屏（通常取光标所在屏）；缺省聚焦第一块可用屏 */
   pointOfInterest?: () => Point
   /**
@@ -117,6 +125,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
   const triggerAccelerator = deps.triggerAccelerator ?? DEFAULT_FREEZE_ACCELERATOR
   const exitAccelerator = deps.exitAccelerator ?? FREEZE_EXIT_ACCELERATOR
   const copyAccelerator = deps.copyAccelerator ?? FREEZE_COPY_ACCELERATOR
+  const translateAccelerator = deps.translateAccelerator ?? FREEZE_TRANSLATE_ACCELERATOR
 
   let created: OverlayWindowHandle[] = []
   let frozen = false
@@ -127,28 +136,33 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
   function releaseShortcuts(): void {
     deps.shortcuts.unregister(exitAccelerator)
     deps.shortcuts.unregister(copyAccelerator)
+    deps.shortcuts.unregister(translateAccelerator)
   }
 
   /**
-   * 注册拷贝键。与退出键不同，它注册不上只记日志：退出键是冻结态唯一的常规出口，
-   * 缺失即形成无出口的置顶透明层；拷贝只是便利功能，代价面不对称。
+   * 注册一个冻结期的辅助动作键（拷贝、翻译）。
+   * 与退出键不同，注册不上只记日志：退出键是冻结态唯一的常规出口，缺失即形成无出口的置顶透明层；
+   * 辅助动作只是便利功能，代价面不对称。
    */
-  function registerCopyShortcut(): void {
-    const copy = deps.copySelection
-    if (copy === undefined) {
+  function registerActionShortcut(
+    accelerator: string,
+    action: (() => unknown) | undefined,
+    label: string,
+  ): void {
+    if (action === undefined) {
       return
     }
-    const registered = deps.shortcuts.register(copyAccelerator, () => {
+    const registered = deps.shortcuts.register(accelerator, () => {
       // handler 不能是 async：全局快捷键不消费返回值，异常只会变成未处理拒绝。
       void Promise.resolve()
-        .then(() => copy())
+        .then(() => action())
         .catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error)
-          deps.logger?.warn(`拷贝冻结画面失败：${message}`)
+          deps.logger?.warn(`${label}失败：${message}`)
         })
     })
     if (!registered) {
-      deps.logger?.warn(`拷贝键 ${copyAccelerator} 注册失败，冻结期无法拷贝原始截图`)
+      deps.logger?.warn(`${label}的快捷键 ${accelerator} 注册失败，冻结期不可用`)
     }
   }
 
@@ -173,7 +187,8 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     if (!exitRegistered) {
       throw new Error(`无法进入冻结态：退出键 ${exitAccelerator} 注册失败`)
     }
-    registerCopyShortcut()
+    registerActionShortcut(copyAccelerator, deps.copySelection, '拷贝冻结画面')
+    registerActionShortcut(translateAccelerator, deps.translateSelection, '翻译锁定选区')
 
     const opened: OverlayWindowHandle[] = []
     try {
