@@ -1,14 +1,26 @@
 import { readDeepSeekKey, redactSecret } from '@treen/shared'
 
-/** 壳与渲染端/主进程之间使用的稳定通道名，集中定义以防字符串漂移。 */
+/**
+ * Electron 进程间的稳定通道名，集中定义以防字符串漂移。
+ *
+ * 只收真正走 `ipcMain.handle` / `ipcRenderer.invoke` 的通道。渲染站是独立进程的 HTTP 服务，
+ * 它的接口不属于这里：约定见 `RENDER_SITE_ROUTES`。两者混在一张表里会让实现者误判传输方式。
+ */
 export const IPC_CHANNELS = {
   freezeScreen: 'treen:freeze-screen',
   translateSelection: 'treen:translate-selection',
-  renderMermaid: 'treen:render-mermaid',
   captureComposite: 'treen:capture-composite',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]
+
+/** 常驻渲染站的 HTTP 端点：mermaid 源码进、SVG 出。路径集中定义，两侧共此一份。 */
+export const RENDER_SITE_ROUTES = {
+  /** POST { source } → { svg, width, height } 或 { error }；源码不合法时不渲染，报错带原因 */
+  render: '/api/render',
+  /** GET → { status: 'ok', version }，用于壳层确认渲染站已就绪 */
+  health: '/api/health',
+} as const
 
 export interface SharedConfigProbe {
   configured: boolean
