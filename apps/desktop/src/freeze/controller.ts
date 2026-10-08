@@ -281,6 +281,13 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
 
   function start(): boolean {
     return deps.shortcuts.register(triggerAccelerator, () => {
+      // 热键在冻结态里是开关：用户按第二下想要的是「取消」，而不是按了没反应。
+      // 只在真的已经冻结时走退出；进入在途时（截屏未回）第二下仍是幂等的重入，
+      // 打断它需要给进入流程加中止语义，那是另一件事。
+      if (frozen) {
+        exit()
+        return
+      }
       // 失败已在 doEnter 内经 reportError 呈现，这里吞掉 rejection 只为避免未处理拒绝告警。
       void enter().catch(() => {})
     })

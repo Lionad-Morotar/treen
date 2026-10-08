@@ -4,6 +4,7 @@ import { deflateSync } from 'node:zlib'
 // ClipboardItem 在主进程不是全局量（那是渲染端的 Web API），必须从 electron 模块取。
 import { BrowserWindow, ClipboardItem, app, clipboard, globalShortcut, nativeImage, screen } from 'electron'
 import { ShortcutManager } from '../../src/freeze/shortcuts'
+import { createFreezeController } from '../../src/freeze/controller'
 import { DEFAULT_FREEZE_ACCELERATOR, freezeWindowOptions } from '../../src/freeze/window-options'
 import { readLockedRegion } from '../../src/freeze/electron-adapters'
 import { createSelectionCopier } from '../../src/selection/selection'
@@ -201,6 +202,18 @@ const INNER = { x: 50, y: 40, width: 100, height: 80 }
 const OUTER = { x: 0, y: 0, width: 400, height: 300 }
 
 const TRANSPARENT = 'rgba(0, 0, 0, 0)'
+
+/** 轮询等一个条件成立；这里不引测试框架，等的是真机上的异步收敛。 */
+async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  return predicate()
+}
 
 /**
  * 覆盖层候选渲染与悬停高亮。
@@ -419,6 +432,87 @@ async function verifyLockedRegionPull(window: BrowserWindow | null): Promise<voi
 
   bare.destroy()
   check('窗口已销毁时返回 null', (await readLockedRegion(bare)) === null)
+}
+
+/**
+ * 冻结期快捷键的生命周期，走真实的 globalShortcut 表。
+ *
+ * 这条单测覆盖不到：替身注册器里「没释放」只是少了一个 Map 键，真机上却是一个还挂在系统里的
+ * 全局快捷键，退出冻结后继续劫持用户的 Cmd+C。用真的 globalShortcut 注册、用真的注册表读状态，
+ * 触点则用包在 registrar 外面的记录表模拟按键（Electron 无法程序化触发全局快捷键）。
+ */
+async function verifyFreezeShortcutLifecycle(): Promise<void> {
+  const displays = screen.getAllDisplays()
+  if (displays.length === 0) {
+    return
+  }
+
+  const handlers = new Map<string, () => void>()
+  const shortcuts = new ShortcutManager({
+    register: (accelerator, handler) => {
+      if (!globalShortcut.register(accelerator, handler)) {
+        return false
+      }
+      handlers.set(accelerator, handler)
+      return true
+    },
+    unregister: (accelerator) => {
+      globalShortcut.unregister(accelerator)
+      handlers.delete(accelerator)
+    },
+    isRegistered: (accelerator) => globalShortcut.isRegistered(accelerator),
+  })
+
+  let sequence = 0
+  const closed: number[] = []
+  const controller = createFreezeController({
+    listDisplays: () => displays.map(displayLikeOf),
+    captureFrames: async () =>
+      displays.map((display) => ({
+        id: `src-${display.id}`,
+        displayId: String(display.id),
+        size: { width: 2, height: 2 },
+        dataUrl: PROBE_PNG,
+      })),
+    windows: {
+      create: (display) => {
+        const id = ++sequence
+        return {
+          id,
+          displayId: display.id,
+          focus: () => {},
+          close: () => {
+            closed.push(id)
+          },
+          isDestroyed: () => closed.includes(id),
+          setCandidates: () => {},
+          readSelection: async () => null,
+        }
+      },
+    },
+    shortcuts,
+    copyAccelerator: 'CommandOrControl+Shift+C',
+    copySelection: () => {},
+  })
+
+  check('触发热键注册进真实快捷键表', controller.start() && globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
+
+  handlers.get(DEFAULT_FREEZE_ACCELERATOR)?.()
+  await waitUntil(() => controller.isFrozen())
+  check('冻结期退出键与拷贝键都已挂上', globalShortcut.isRegistered('Escape') && globalShortcut.isRegistered('CommandOrControl+Shift+C'))
+
+  // 再按一次触发热键：真机上就是「取消」。
+  handlers.get(DEFAULT_FREEZE_ACCELERATOR)?.()
+  check('重复触发后不再处于冻结', !controller.isFrozen())
+  check('覆盖窗已全部拆掉', closed.length === displays.length, { closed, displays: displays.length })
+  check(
+    '冻结期的三个键都已从系统释放',
+    !['Escape', 'CommandOrControl+Shift+C'].some((accelerator) => globalShortcut.isRegistered(accelerator)),
+  )
+  check('触发热键本身留着，供下一次冻结', globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
+
+  controller.dispose()
+  check('应用退出后触发热键也释放', !globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
 }
 
 /** 四象限加透明块的探针图：颜色分区让裁剪的偏移与尺度错误无从躲藏。 */
@@ -857,6 +951,7 @@ app.whenReady().then(async () => {
     await verifyLockedRegionPull(window)
     await verifyEdgeDetection()
     await verifySystemWindows()
+    await verifyFreezeShortcutLifecycle()
     await verifyClipboardCopy()
     if (window !== null && !window.isDestroyed()) {
       window.destroy()

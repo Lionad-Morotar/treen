@@ -137,6 +137,57 @@ describe('freeze controller: start', () => {
   })
 })
 
+describe('freeze controller: 重复触发热键', () => {
+  async function frozenHarness() {
+    const harness = createHarness()
+    harness.controller.start()
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
+    return harness
+  }
+
+  it('再按一次触发热键就退出冻结，与 Escape 同义', async () => {
+    const harness = await frozenHarness()
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    expect(harness.controller.isFrozen()).toBe(false)
+    expect(harness.windows.records.every((r) => r.handle.isDestroyed())).toBe(true)
+    expect(harness.shortcuts.handlers.has(ESCAPE)).toBe(false)
+  })
+
+  it('退出不重新截屏，热键是开关而不是重新进入', async () => {
+    const harness = await frozenHarness()
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    expect(harness.captureFrames).toHaveBeenCalledTimes(1)
+    expect(harness.windows.records).toHaveLength(2)
+  })
+
+  it('退出后可以再次进入', async () => {
+    const harness = await frozenHarness()
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
+    expect(harness.captureFrames).toHaveBeenCalledTimes(2)
+  })
+
+  it('重复触发退出时一并释放拷贝键', async () => {
+    const harness = createHarness({ copySelection: vi.fn() })
+    harness.controller.start()
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+    await vi.waitFor(() => expect(harness.shortcuts.handlers.has(COPY)).toBe(true))
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    expect(harness.shortcuts.handlers.size).toBe(1)
+    expect(harness.shortcuts.handlers.has(TRIGGER)).toBe(true)
+  })
+})
+
 describe('freeze controller: enter', () => {
   it('captures at the largest physical size and opens one window per matched display', async () => {
     const harness = createHarness()
