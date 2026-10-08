@@ -27,7 +27,14 @@ export default defineConfig({
       fileName: () => 'main.cjs',
     },
     rollupOptions: {
-      external: ['electron', ...builtinModules, ...builtinModules.map((name) => `node:${name}`)],
+      // get-windows 必须留在产物之外：它在 macOS 侧靠 import.meta.url 定位随包分发的二进制，
+      // 打进 CJS 产物后既没有真正的 import.meta，二进制路径也会算错。运行时经动态 import 加载。
+      external: [
+        'electron',
+        'get-windows',
+        ...builtinModules,
+        ...builtinModules.map((name) => `node:${name}`),
+      ],
     },
   },
 })

@@ -4,9 +4,14 @@ import { deflateSync } from 'node:zlib'
 import { BrowserWindow, app, globalShortcut, nativeImage, screen } from 'electron'
 import { ShortcutManager } from '../../src/freeze/shortcuts'
 import { DEFAULT_FREEZE_ACCELERATOR, freezeWindowOptions } from '../../src/freeze/window-options'
-import { frameBorders } from '../../src/highlight/electron-candidates'
+import { createSystemWindowSource, frameBorders } from '../../src/highlight/electron-candidates'
 import { bgraToRgba } from '../../src/highlight/pixels'
-import type { Candidate } from '../../src/highlight/candidates'
+import {
+  SYSTEM_UI_BUNDLE_IDS,
+  buildCandidates,
+  windowCandidates,
+  type Candidate,
+} from '../../src/highlight/candidates'
 
 /**
  * 冻结域真链路冒烟：在真实 Electron 运行时里验证单测覆盖不到的部分。
@@ -367,12 +372,108 @@ async function verifyEdgeDetection(): Promise<void> {
   )
 }
 
+/**
+ * 系统窗口一路的真链路：经真实窗口枚举器拿到窗口列表，并验证双路合成。
+ * 枚举依赖外部二进制与屏幕录制权限，本机通常可用；取不到时如实报失败而不是跳过。
+ */
+async function verifySystemWindows(): Promise<void> {
+  const display = screen.getAllDisplays()[0]
+  if (display === undefined) {
+    return
+  }
+  const displayLike = displayLikeOf(display)
+
+  let windows: Awaited<ReturnType<ReturnType<typeof createSystemWindowSource>['list']>>
+  try {
+    windows = await createSystemWindowSource().list()
+  } catch (error) {
+    check('系统窗口枚举可用', false, error instanceof Error ? error.message : String(error))
+    return
+  }
+
+  check('系统窗口枚举可用', Array.isArray(windows), `共 ${windows.length} 个窗口`)
+  check(
+    '窗口条目几何是有限数值',
+    windows.every(
+      (win) =>
+        [win.bounds.x, win.bounds.y, win.bounds.width, win.bounds.height].every(Number.isFinite) &&
+        win.bounds.width > 0 &&
+        win.bounds.height > 0,
+    ),
+    windows[0],
+  )
+
+  const candidates = windowCandidates(displayLike, windows)
+  check(
+    '窗口候选都落在本屏范围内',
+    candidates.length > 0 &&
+      candidates.every(
+        (c) =>
+          c.x >= 0 &&
+          c.y >= 0 &&
+          c.x + c.width <= display.bounds.width + 1 &&
+          c.y + c.height <= display.bounds.height + 1,
+      ),
+    candidates.slice(0, 3),
+  )
+  // 真实枚举确实会带出系统 UI 层窗口（登录窗常以整屏尺寸出现），它们是过滤器的现实作用对象。
+  const systemUiCount = windows.filter((win) => SYSTEM_UI_BUNDLE_IDS.includes(win.bundleId ?? '')).length
+  check('原始窗口列表含系统 UI 层窗口，过滤器有作用对象', systemUiCount > 0, {
+    systemUiCount,
+    total: windows.length,
+  })
+  check(
+    '窗口候选数不超过原始窗口数（哨兵值、系统层、离屏窗口都已被滤掉）',
+    candidates.length <= windows.length,
+    { candidates: candidates.length, windows: windows.length },
+  )
+
+  // 过滤与剔除的确定性形态用自造列表断言，不依赖本机当时开着哪些窗口。
+  const mixed = [
+    { bounds: displayLike.bounds, bundleId: 'com.apple.loginwindow' },
+    {
+      bounds: { x: displayLike.bounds.x + 10, y: displayLike.bounds.y + 10, width: 200, height: 150 },
+      bundleId: 'com.example.app',
+      processId: process.pid,
+    },
+  ]
+  const picked = windowCandidates(displayLike, mixed)
+  check(
+    '系统 UI 层窗口被剔除、普通窗口保留',
+    picked.length === 1 && picked[0]?.width === 200 && picked[0].x === 10,
+    picked,
+  )
+  check(
+    '本应用自身的窗口被剔除',
+    windowCandidates(displayLike, mixed, { excludeProcessId: process.pid }).length === 0,
+  )
+
+  const withoutSelfFilter = windowCandidates(displayLike, windows).length
+  const withSelfFilter = windowCandidates(displayLike, windows, { excludeProcessId: process.pid }).length
+  check('剔除自身进程不会引入新候选', withSelfFilter <= withoutSelfFilter, {
+    withoutSelfFilter,
+    withSelfFilter,
+  })
+
+  const dataUrl = buildProbePng(400, 300, [40, 30, 360, 270])
+  const { frameSize, borders } = frameBorders({
+    id: 'probe',
+    displayId: '1',
+    size: { width: 400, height: 300 },
+    dataUrl,
+  })
+  const merged = buildCandidates({ display: displayLike, frameSize, borders, windows })
+  const sources = [...new Set(merged.map((c) => c.source))].sort()
+  check('双路合成同时产出边缘与系统窗口候选', sources.join(',') === 'edge,window', sources)
+}
+
 app.whenReady().then(async () => {
   try {
     await verifyShortcuts()
     const window = await verifyOverlayWindow()
     await verifyCandidateHighlight(window)
     await verifyEdgeDetection()
+    await verifySystemWindows()
     if (window !== null && !window.isDestroyed()) {
       window.destroy()
     }

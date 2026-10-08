@@ -2,7 +2,7 @@ import { nativeImage } from 'electron'
 import { detectBorders } from 'edge_det'
 import type { DisplayLike, Size } from '../freeze/geometry'
 import type { FreezeFrame, FreezeLogger } from '../freeze/controller'
-import { buildCandidates, type BorderRect, type Candidate } from './candidates'
+import { buildCandidates, type BorderRect, type Candidate, type SystemWindowLike } from './candidates'
 import { bgraToRgba } from './pixels'
 
 /**
@@ -71,11 +71,61 @@ export type CandidateBuilder = (
   frame: FreezeFrame,
 ) => Promise<readonly Candidate[]>
 
-/** 边缘单路的构建器。 */
-export function createEdgeCandidateBuilder(options: EdgeDetectionOptions = {}): CandidateBuilder {
+/** 系统窗口来源；真实实现走窗口枚举器，测试替身可直接注入。 */
+export interface SystemWindowSource {
+  list(): Promise<readonly SystemWindowLike[]>
+}
+
+/**
+ * macOS 系统窗口枚举。
+ *
+ * 走 get-windows：在 macOS 侧它是一个随包分发的通用二进制，经子进程调用，因此用动态 import
+ * （顺带解决 CJS 主进程加载纯 ESM 依赖的形态问题）。
+ * 显式关掉辅助功能权限检查：枚举只需要窗口几何（与截屏同属屏幕录制权限范畴），
+ * 不取 url 就不会为这一路候选多要一项系统授权。
+ */
+export function createSystemWindowSource(): SystemWindowSource {
+  return {
+    async list() {
+      const { openWindows } = await import('get-windows')
+      const windows = await openWindows({ accessibilityPermission: false, screenRecordingPermission: true })
+      return windows.map((window) => ({
+        bounds: window.bounds,
+        bundleId: window.platform === 'macos' ? window.owner.bundleId : null,
+        processId: window.owner.processId,
+      }))
+    },
+  }
+}
+
+export interface CandidateBuilderOptions extends EdgeDetectionOptions {
+  windows?: SystemWindowSource
+  /** 剔除该进程的窗口，缺省是本应用自身（覆盖层也是窗口，不能成为候选） */
+  excludeProcessId?: number
+}
+
+/**
+ * 双路合成的候选区域构建器：边缘检测给「肉眼可见的块」，系统窗口给「视觉检测不到的纯色/无边框窗」。
+ * 后者的枚举要经外部二进制与系统权限，取不到只损失一路候选，边缘路照常出结果，故单独兜住异常。
+ */
+export function createCandidateBuilder(options: CandidateBuilderOptions = {}): CandidateBuilder {
+  const windows = options.windows ?? createSystemWindowSource()
+  const excludeProcessId = options.excludeProcessId ?? process.pid
+
   return async (display, frame) => {
     const { frameSize, borders } = frameBorders(frame, options)
-    options.logger?.info(`显示器 ${display.id} 边缘检测出 ${borders.length} 条边界`)
-    return buildCandidates({ display, frameSize, borders })
+
+    let windowRects: readonly SystemWindowLike[] = []
+    try {
+      windowRects = await windows.list()
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      options.logger?.warn(`系统窗口枚举失败，本次只用边缘路：${reason}`)
+    }
+
+    options.logger?.info(
+      `显示器 ${display.id} 候选输入：边缘 ${borders.length} 条、系统窗口 ${windowRects.length} 个`,
+    )
+    return buildCandidates({ display, frameSize, borders, windows: windowRects, excludeProcessId })
   }
 }
