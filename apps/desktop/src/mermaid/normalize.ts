@@ -28,21 +28,16 @@ const FULLWIDTH: Readonly<Record<string, string>> = {
   '｜': '|',
 }
 
-/** 图类型关键字的大小写规范形（仅列 OCR 可能小写化、且 mermaid 大小写敏感的那些）。 */
+/**
+ * 图类型关键字的大小写规范形（仅列 OCR 可能小写化、且 mermaid 大小写敏感的那些）。
+ * 键集与 detect 的声明表一致：只有能被检出的类型才需要在此修正大小写。
+ */
 const CANONICAL_KEYWORD: Readonly<Record<string, string>> = {
   sequencediagram: 'sequenceDiagram',
   classdiagram: 'classDiagram',
   'statediagram-v2': 'stateDiagram-v2',
   statediagram: 'stateDiagram',
   erdiagram: 'erDiagram',
-  gitgraph: 'gitGraph',
-  quadrantchart: 'quadrantChart',
-  requirementdiagram: 'requirementDiagram',
-  c4context: 'C4Context',
-  c4container: 'C4Container',
-  c4component: 'C4Component',
-  c4dynamic: 'C4Dynamic',
-  c4deployment: 'C4Deployment',
 }
 
 /** 破折号类字符：ASCII 连字符与几种全角/长横线，都是 OCR 对 `-` 的等价变体。 */
@@ -101,10 +96,15 @@ export function normalizeMermaid(source: string): string {
       } else if (ch === '}') {
         initDepth -= 1
         if (initDepth === 0 && source.startsWith('%%', index + 1)) {
-          // 以换行占位而非直接删除：避免剥离后行结构坍塌、把相邻两行粘成一行影响行首判定。
-          out += '\n'
           index += 3
-          atLineStart = false
+          // 指令独占整行时就连同其换行一起吃掉，该行不留痕迹；行内指令则以一个换行收尾，
+          // 避免剥离后两侧文本粘连、行结构坍塌影响行首判定。
+          if (source[index] === '\n') {
+            index += 1
+          } else {
+            out += '\n'
+          }
+          atLineStart = true
           continue
         }
       }
@@ -155,15 +155,18 @@ export function normalizeMermaid(source: string): string {
       const headChar = source[head] ?? ''
 
       if (headChar === '.') {
-        // 虚线箭头/虚线连线（-.-> / -.-）语义独立，形态精确时整体保留。
-        if (source.startsWith('-.->', index)) {
+        // 虚线箭头/虚线连线（-.-> / -.-）语义独立于实线，须整体识别。OCR 可能在笔画之间塞进空格
+        // （- . ->），故匹配时容忍空格，命中后一律输出规范形。
+        const dashedArrow = /^-\s*\.\s*->/.exec(source.slice(index))
+        if (dashedArrow !== null) {
           out += '-.->'
-          index += 4
+          index += dashedArrow[0].length
           continue
         }
-        if (source.startsWith('-.-', index)) {
+        const dashedLine = /^-\s*\.\s*-/.exec(source.slice(index))
+        if (dashedLine !== null) {
           out += '-.-'
-          index += 3
+          index += dashedLine[0].length
           continue
         }
       }

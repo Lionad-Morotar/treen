@@ -56,6 +56,12 @@ describe('normalizeMermaid · 箭头归一（单次扫描）', () => {
     expect(normalizeMermaid('A -.-> B')).toBe('A -.-> B')
     expect(normalizeMermaid('A --o B')).toBe('A --o B')
   })
+
+  it('虚线箭头的笔画之间被 OCR 塞进空格时也还原', () => {
+    expect(normalizeMermaid('A -. -> B')).toBe('A -.-> B')
+    expect(normalizeMermaid('A - . -> B')).toBe('A -.-> B')
+    expect(normalizeMermaid('A - . - B')).toBe('A -.- B')
+  })
 })
 
 describe('normalizeMermaid · 图声明规范化', () => {
@@ -67,6 +73,8 @@ describe('normalizeMermaid · 图声明规范化', () => {
   it('归一图类型关键字大小写', () => {
     expect(normalizeMermaid('sequencediagram\n  X ->> Y')).toBe('sequenceDiagram\n  X ->> Y')
     expect(normalizeMermaid('statediagram-v2\n  A --> B')).toBe('stateDiagram-v2\n  A --> B')
+    expect(normalizeMermaid('classdiagram\n  Animal <|-- Duck')).toBe('classDiagram\n  Animal <|-- Duck')
+    expect(normalizeMermaid('erdiagram\n  A ||--o{ B : x')).toBe('erDiagram\n  A ||--o{ B : x')
   })
 })
 
@@ -89,6 +97,15 @@ describe('normalizeMermaid · init 指令剥离（样式锁定执行点）', () 
 
   it('普通 %% 注释不被误当 init 指令', () => {
     expect(normalizeMermaid('flowchart LR\n  %% 这是注释\n  A --> B')).toContain('%% 这是注释')
+  })
+
+  it('独占整行的 init 指令剥离后不留多余空行', () => {
+    expect(normalizeMermaid('%%{init: {"a": 1}}%%\nflowchart LR\n  A --> B')).toBe('flowchart LR\n  A --> B')
+    expect(normalizeMermaid('flowchart LR\n%%{init: {"a": 1}}%%\n  A --> B')).toBe('flowchart LR\n  A --> B')
+  })
+
+  it('跨行 init 指令剥离后同样不留多余空行', () => {
+    expect(normalizeMermaid('%%{init: {\n  "theme": "base"\n} }%%\nflowchart LR')).toBe('flowchart LR')
   })
 })
 
