@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Treen 冻结层</title>
+    <style>
+      /* 冻结层是透明窗：页面不得绘制任何底色，多出的像素透出桌面而非白底。
+         截图按 object-fit: cover 铺满，比例与窗口一致时为精确贴合，永不出现信箱边。 */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+
+      #treen-freeze-frame {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        object-fit: cover;
+        user-select: none;
+        -webkit-user-drag: none;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 冻结画面容器；data-testid 供真链路 smoke 定位与后续切片复用 -->
+    <img id="treen-freeze-frame" data-testid="freeze-frame" alt="" />
+    <script>
+      // 主进程在截图就绪后经 executeJavaScript 调用。挂在 window 上而非模块作用域，
+      // 才能被 executeJavaScript 的全局求值命中；source 是 PNG data URL。
+      window.__treenSetFrame = function (dataUrl) {
+        var img = document.getElementById('treen-freeze-frame')
+        if (img && typeof dataUrl === 'string' && dataUrl.length > 0) {
+          img.src = dataUrl
+        }
+      }
+    </script>
+  </body>
+</html>
