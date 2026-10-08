@@ -175,7 +175,12 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     if (build === undefined) {
       return
     }
-    void build(display, frame)
+    // 先落进微任务再加链：返回值是 Promise 只是类型约定，不约束实现一定是 async 函数，
+    // 一个同步抛错的实现会让异常直接穿出 runEnter 的 catch，把整个冻结拆掉。
+    // 先落进微任务再加链：返回值是 Promise 只是类型约定，不约束实现一定是 async 函数，
+    // 一个同步抛错的实现会让异常直接穿出 runEnter 的 catch，把整个冻结拆掉。
+    void Promise.resolve()
+      .then(() => build(display, frame))
       .then((candidates) => {
         handle.setCandidates(candidates)
       })

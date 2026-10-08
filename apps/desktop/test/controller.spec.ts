@@ -332,6 +332,23 @@ describe('freeze controller: 候选区域注入', () => {
     expect(harness.warn.mock.calls.some(([message]) => String(message).includes('边缘检测炸了'))).toBe(true)
   })
 
+  it('依赖是同步抛错的非 async 实现时也只在日志里落地，不拆掉冻结', async () => {
+    // 返回值类型是 Promise 只是约定，const 一个同步抛错的函数同样满足签名。
+    // 直接 void build(...) 会让异常穿出 enter 的 catch，把已经铺好的画面整个拆掉。
+    const harness = createHarness({
+      buildCandidates: () => {
+        throw new Error('同步炸了')
+      },
+    })
+
+    await harness.controller.enter()
+    await vi.waitFor(() => expect(harness.warn).toHaveBeenCalled())
+
+    expect(harness.controller.isFrozen()).toBe(true)
+    expect(harness.windows.records.every((r) => !r.handle.isDestroyed())).toBe(true)
+    expect(harness.warn.mock.calls.some(([message]) => String(message).includes('同步炸了'))).toBe(true)
+  })
+
   it('缺省不注入候选，冻结只铺画面', async () => {
     const harness = createHarness()
 
