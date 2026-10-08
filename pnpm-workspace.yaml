@@ -2,7 +2,10 @@ packages:
   - apps/*
   - packages/*
 
-# pnpm 10+ 默认拦截依赖的构建脚本；此处显式放行本仓确实需要执行安装脚本的依赖，
-# 否则 install 以 ERR_PNPM_IGNORED_BUILDS 非零退出，--frozen-lockfile 亦随之失败。
+# pnpm 12 默认拦截依赖的构建脚本；此处显式声明本仓各依赖的构建策略，
+# 未列出的依赖若带脚本会让 install 以 ERR_PNPM_IGNORED_BUILDS 非零退出，--frozen-lockfile 亦随之失败。
 allowBuilds:
   esbuild: true
+  # get-windows 的 install 脚本只在 Windows 侧编译原生插件；macOS 侧用的是随包分发的
+  # 通用 Mach-O 二进制（main），不经过该脚本，故显式拒绝以免安装期联网下载。
+  get-windows: false

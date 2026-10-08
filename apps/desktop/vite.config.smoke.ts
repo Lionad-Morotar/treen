@@ -18,7 +18,13 @@ export default defineConfig({
       fileName: () => 'freeze-smoke.cjs',
     },
     rollupOptions: {
-      external: ['electron', ...builtinModules, ...builtinModules.map((name) => `node:${name}`)],
+      // get-windows 与主进程构建保持同一处置：留在产物外，运行时动态 import。
+      external: [
+        'electron',
+        'get-windows',
+        ...builtinModules,
+        ...builtinModules.map((name) => `node:${name}`),
+      ],
     },
   },
 })

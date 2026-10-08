@@ -8,6 +8,7 @@ import type {
 } from './controller'
 import type { ShortcutRegistrar } from './shortcuts'
 import { freezeWindowOptions } from './window-options'
+import type { Candidate } from '../highlight/candidates'
 
 /**
  * Electron 运行时绑定层：把纯逻辑控制器需要的四类能力（取屏、截屏、建窗、快捷键）
@@ -93,10 +94,31 @@ export function createOverlayWindowFactory(
         `覆盖窗 display=${display.id} 帧 ${(frame.dataUrl.length / 1024 / 1024).toFixed(2)}MB`,
       )
 
+      // 候选区域由控制器后台算好后送来，抵达时机可能早于 overlay.html 就绪（页面的注入原语
+      // 尚未定义），故先暂存，待加载完成再投递；后到的覆盖先到的，只保留最新一份。
+      let loaded = false
+      let pendingCandidates: readonly Candidate[] | null = null
+
+      function injectCandidates(): void {
+        if (!loaded || pendingCandidates === null || window.isDestroyed()) {
+          return
+        }
+        const payload = JSON.stringify(pendingCandidates)
+        pendingCandidates = null
+        void window.webContents
+          .executeJavaScript(`window.__treenSetCandidates(${payload})`)
+          .catch((error: unknown) => {
+            logger?.warn(
+              `候选区域注入失败：${error instanceof Error ? error.message : String(error)}`,
+            )
+          })
+      }
+
       window.webContents.once('did-finish-load', () => {
         if (window.isDestroyed()) {
           return
         }
+        loaded = true
         void window.webContents
           .executeJavaScript(`window.__treenSetFrame(${JSON.stringify(frame.dataUrl)})`)
           .catch((error: unknown) => {
@@ -109,6 +131,7 @@ export function createOverlayWindowFactory(
               window.showInactive()
             }
           })
+        injectCandidates()
       })
       void window.loadFile(overlayPath).catch((error: unknown) => {
         // 窗口在加载途中被 destroy（瞬时退出）时 rejection 属预期噪音，只在窗口仍活着时告警。
@@ -120,6 +143,13 @@ export function createOverlayWindowFactory(
       return {
         id,
         displayId: display.id,
+        setCandidates: (candidates) => {
+          if (window.isDestroyed()) {
+            return
+          }
+          pendingCandidates = candidates
+          injectCandidates()
+        },
         focus: () => {
           if (window.isDestroyed()) {
             return
