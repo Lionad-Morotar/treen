@@ -115,12 +115,22 @@ export function frameScaleOf(display: DisplayLike, frameSize: Size): Size {
 /**
  * 显示器相对 DIP 矩形换算成帧位图的像素裁剪矩形：取整并裁到帧内。
  *
- * 返回 null 而不是一张空图：完全落在帧外、或换算退化成零面积时，调用方该放弃这次动作
- * 并出声，悄悄交出一张空图会让下游以为拿到了有效像素。
+ * 返回 null 而不是一张空图：完全落在帧外、换算退化成零面积、或入参含非有限值时，
+ * 调用方该放弃这次动作并出声，悄悄交出一张空图会让下游以为拿到了有效像素。
  */
 export function dipRectToFrameRect(rect: Rect, display: DisplayLike, frameSize: Size): Rect | null {
   const scale = frameScaleOf(display, frameSize)
   if (scale.width <= 0 || scale.height <= 0) {
+    return null
+  }
+  // 非有限值须在这里拦下：NaN 与任何数作比较都是 false，下面每一道取整与面积判据都放它过关，
+  // 最终把 { x: NaN } 交给 crop 之类的原生 API，错在远离调用点的地方才暴露。
+  if (
+    !Number.isFinite(rect.x) ||
+    !Number.isFinite(rect.y) ||
+    !Number.isFinite(rect.width) ||
+    !Number.isFinite(rect.height)
+  ) {
     return null
   }
   const left = Math.max(0, Math.round(rect.x * scale.width))

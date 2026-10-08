@@ -207,4 +207,12 @@ describe('dipRectToFrameRect', () => {
       height: 10,
     })
   })
+
+  it('reject a rect carrying NaN instead of letting it slip through every arithmetic guard', () => {
+    // NaN 与任何数的比较都是 false，连「面积非正即拒绝」都拦不住，最后一路交给裁剪 API。
+    expect(dipRectToFrameRect({ x: NaN, y: 10, width: 100, height: 50 }, primary, frame)).toBeNull()
+    expect(dipRectToFrameRect({ x: 10, y: NaN, width: 100, height: 50 }, primary, frame)).toBeNull()
+    expect(dipRectToFrameRect({ x: 10, y: 10, width: NaN, height: 50 }, primary, frame)).toBeNull()
+    expect(dipRectToFrameRect({ x: 10, y: 10, width: 100, height: NaN }, primary, frame)).toBeNull()
+  })
 })
