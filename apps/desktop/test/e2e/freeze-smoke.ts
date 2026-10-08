@@ -4,7 +4,11 @@ import { deflateSync } from 'node:zlib'
 import { BrowserWindow, app, globalShortcut, nativeImage, screen } from 'electron'
 import { ShortcutManager } from '../../src/freeze/shortcuts'
 import { DEFAULT_FREEZE_ACCELERATOR, freezeWindowOptions } from '../../src/freeze/window-options'
-import { createSystemWindowSource, frameBorders } from '../../src/highlight/electron-candidates'
+import {
+  MAX_DETECT_EXTENT,
+  createSystemWindowSource,
+  frameBorders,
+} from '../../src/highlight/electron-candidates'
 import { bgraToRgba } from '../../src/highlight/pixels'
 import {
   buildCandidates,
@@ -370,6 +374,37 @@ async function verifyEdgeDetection(): Promise<void> {
       Math.abs(detected.h - 242) <= 1,
     detected,
   )
+
+  // 超限帧（本机 Retina 全屏帧是 4112×2658 量级）：长边须压回工作上限内，且坐标仍能换算回原分辨率。
+  // 这两件事必须一起成立，压了尺寸却不换算是满屏错位的候选，不压尺寸则是主进程一秒级的停摆。
+  const bigWidth = 4100
+  const bigHeight = 2650
+  const drawn: [number, number, number, number] = [820, 530, 1640, 1060]
+  const big = frameBorders({
+    id: 'probe',
+    displayId: '1',
+    size: { width: bigWidth, height: bigHeight },
+    dataUrl: buildProbePng(bigWidth, bigHeight, drawn),
+  })
+  check(
+    '超限帧先缩到长边上限再检测',
+    Math.max(big.frameSize.width, big.frameSize.height) <= MAX_DETECT_EXTENT &&
+      big.frameSize.width < bigWidth,
+    { frameSize: big.frameSize, source: { width: bigWidth, height: bigHeight } },
+  )
+  // 换算回缩图坐标系比对：容器尺寸变了，容差用「缩图像素」表达才是稳定口径。
+  const shrink = big.frameSize.width / bigWidth
+  const shrinkY = big.frameSize.height / bigHeight
+  const match = big.borders.find(
+    (border) =>
+      Math.abs(border.x - drawn[0] * shrink) <= 3 &&
+      Math.abs(border.y - drawn[1] * shrinkY) <= 3 &&
+      Math.abs(border.w - (drawn[2] - drawn[0]) * shrink) <= 3,
+  )
+  check('缩图检出的矩形按位图比例可还原回原分辨率的位置', match !== undefined, {
+    borders: big.borders,
+    shrink: Math.round(shrink * 1000) / 1000,
+  })
 }
 
 /**
