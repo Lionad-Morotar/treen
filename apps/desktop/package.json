@@ -16,7 +16,8 @@
     "@treen/ipc": "workspace:*",
     "@treen/shared": "workspace:*",
     "edge_det": "^0.1.3",
-    "get-windows": "^9.3.0"
+    "get-windows": "^9.3.0",
+    "mac-ocr": "^1.1.1"
   },
   "devDependencies": {
     "electron": "^44.7.0",
