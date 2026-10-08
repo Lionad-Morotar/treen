@@ -24,10 +24,14 @@ export interface ReadDeepSeekKeyOptions {
  * 主进程被打包成 CJS 产物后 rolldown 会把 import.meta 整体替成空对象，此时取 __dirname；
  * 两者都取不到再退回 cwd。关键是绝不无条件访问 import.meta.url——CJS 产物下它是
  * undefined，fileURLToPath 会在模块加载期抛错，让整个应用起不来。
+ *
+ * 还有第三种宿主：jiti 加载 nuxt.config 时会把 ESM TS 模块包成 `data:` URL，此时
+ * import.meta.url 存在但不是 file: 协议，fileURLToPath 同样在加载期抛错。故 url 分支
+ * 须先验协议，非 file: 一律让位给 __dirname（jiti 的包装器会注入真实的 __dirname）。
  */
 function resolveModuleDirectory(): string {
   const metaUrl = (import.meta as { url?: string }).url
-  if (typeof metaUrl === 'string' && metaUrl.length > 0) {
+  if (typeof metaUrl === 'string' && metaUrl.startsWith('file:')) {
     return dirname(fileURLToPath(metaUrl))
   }
   if (typeof __dirname === 'string' && __dirname.length > 0) {

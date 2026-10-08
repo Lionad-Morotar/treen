@@ -15,6 +15,9 @@ export default tseslint.config(
       // refs/ 放第三方参考实现的 submodule，它们的风格由上游自己的 lint 配置管，
       // 本仓的规则套上去只会产出几百条与 Treen 无关的噪声。
       'refs/**',
+      // zRefs/ 是同类草稿区：放调试用的三方源码、探针脚本与参考资料（已由 gitignore 排除在仓外），
+      // 例如压过的三方 bundle 会让全仓 lint 直接报上千条错。它不是本仓源码，不该进本仓规则。
+      'zRefs/**',
     ],
   },
   js.configs.recommended,
