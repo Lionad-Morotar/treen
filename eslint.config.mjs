@@ -12,6 +12,9 @@ export default tseslint.config(
       '**/.output/**',
       '**/coverage/**',
       '**/*.d.ts',
+      // refs/ 放第三方参考实现的 submodule，它们的风格由上游自己的 lint 配置管，
+      // 本仓的规则套上去只会产出几百条与 Treen 无关的噪声。
+      'refs/**',
     ],
   },
   js.configs.recommended,
