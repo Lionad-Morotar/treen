@@ -41,14 +41,14 @@ export interface CaptureSourceLike {
   size: Size | null
 }
 
-export interface CaptureMatch {
+export interface CaptureMatch<S extends CaptureSourceLike = CaptureSourceLike> {
   display: DisplayLike
-  source: CaptureSourceLike
+  source: S
 }
 
-export interface CapturePlan {
+export interface CapturePlan<S extends CaptureSourceLike = CaptureSourceLike> {
   /** 配对成功的屏，按 displays 的入参顺序排列 */
-  matches: CaptureMatch[]
+  matches: CaptureMatch<S>[]
   /** 未找到对应源的屏；调用方据它决定降级或记录 */
   missingDisplays: DisplayLike[]
 }
@@ -117,11 +117,11 @@ export function displayContainingPoint(
  * display_id 是字符串而 Display.id 是数字，必须经 String() 归一后比较——直接相等判断在
  * 类型层面就该报错，运行时更会静默恒 false 导致全部屏都配不上。
  */
-export function matchSourcesToDisplays(
-  sources: readonly CaptureSourceLike[],
+export function matchSourcesToDisplays<S extends CaptureSourceLike>(
+  sources: readonly S[],
   displays: readonly DisplayLike[],
-): CapturePlan {
-  const matches: CaptureMatch[] = []
+): CapturePlan<S> {
+  const matches: CaptureMatch<S>[] = []
   const missingDisplays: DisplayLike[] = []
   for (const display of displays) {
     const source = sources.find((candidate) => candidate.displayId === String(display.id))
