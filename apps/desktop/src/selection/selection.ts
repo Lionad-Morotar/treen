@@ -51,17 +51,25 @@ export function pickCopyTarget(
   )
   if (locked.length > 0) {
     const pointed =
-      pointer === undefined ? undefined : locked.find((source) => containsPoint(source.display, pointer))
+      pointer === undefined
+        ? undefined
+        : locked.find((source) => containsPoint(source.display, pointer))
     const chosen = pointed ?? locked[0]
     if (chosen !== undefined) {
       return { source: chosen, region: chosen.locked, fromLock: true }
     }
   }
-  const only = sources[0]
-  if (only === undefined) {
+  // 无锁回退同样以光标定屏：用户此时看着哪块屏，要拷的就是那块。光标落在任何一屏之外
+  // （极少见，窗口间的一道缝、或光标已被移出桌面）才按素材次序取第一块。
+  const pointedFree =
+    pointer === undefined
+      ? undefined
+      : sources.find((source) => containsPoint(source.display, pointer))
+  const fallback = pointedFree ?? sources[0]
+  if (fallback === undefined) {
     return null
   }
-  return { source: only, region: wholeDisplayRect(only.display), fromLock: false }
+  return { source: fallback, region: wholeDisplayRect(fallback.display), fromLock: false }
 }
 
 function containsPoint(display: DisplayLike, point: Point): boolean {

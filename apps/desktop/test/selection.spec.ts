@@ -74,11 +74,25 @@ describe('pickCopyTarget', () => {
     ).toBe(2)
   })
 
-  it('都没锁定时按素材次序取第一个的整幅', () => {
-    const target = pickCopyTarget([source(primary, null), source(secondary, null)])
+  it('都没锁定且光标在副屏上时取光标所在的屏，与锁定分支同口径', () => {
+    const target = pickCopyTarget(
+      [source(primary, null), source(secondary, null)],
+      { x: -500, y: 10 },
+    )
 
-    expect(target?.source.display.id).toBe(1)
+    expect(target?.source.display.id).toBe(2)
+    expect(target?.region).toEqual(wholeDisplayRect(secondary))
     expect(target?.fromLock).toBe(false)
+  })
+
+  it('都没锁定且光标不在任何一屏上时才按素材次序取第一个', () => {
+    const sources = [source(primary, null), source(secondary, null)]
+
+    // 光标落在所有显示器之外（窗口之间的一道缝、或已被移出桌面）：无匹配即回落第一个素材。
+    expect(pickCopyTarget(sources, { x: 9000, y: 9000 })?.source.display.id).toBe(1)
+    // 连光标信号都没有时同理。
+    expect(pickCopyTarget(sources)?.source.display.id).toBe(1)
+    expect(pickCopyTarget(sources)?.fromLock).toBe(false)
   })
 })
 
