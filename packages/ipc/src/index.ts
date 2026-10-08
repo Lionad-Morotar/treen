@@ -22,6 +22,16 @@ export const RENDER_SITE_ROUTES = {
   health: '/api/health',
 } as const
 
+/**
+ * 渲染站的固定端口。壳层凭它拼 `RENDER_SITE_BASE_URL` 发请求，端口漂移会让覆盖渲染整链静默失败。
+ *
+ * 取 `npx @lionad/port-key treen-render` 的生成值，改动要同步渲染站的 dev server 配置与本常量。
+ * 只绑回环：服务只供本机壳层调用，暴露到 LAN 会把这台机器变成一个任何人可用的渲染端点。
+ */
+export const RENDER_SITE_PORT = 5433
+
+export const RENDER_SITE_BASE_URL = `http://127.0.0.1:${RENDER_SITE_PORT}`
+
 export interface SharedConfigProbe {
   configured: boolean
   redactedKey: string | null

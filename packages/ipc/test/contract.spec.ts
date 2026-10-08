@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { IPC_CHANNELS, RENDER_SITE_ROUTES, probeSharedConfig } from '../src/index'
+import {
+  IPC_CHANNELS,
+  RENDER_SITE_BASE_URL,
+  RENDER_SITE_PORT,
+  RENDER_SITE_ROUTES,
+  probeSharedConfig,
+} from '../src/index'
 
 const SAMPLE_KEY = 'sk-4fa26a19a6684c6bb5cdc30800ac0e52'
 
@@ -17,6 +23,12 @@ describe('ipc contract', () => {
     expect(Object.values(IPC_CHANNELS)).not.toContain('treen:render-mermaid')
     expect(RENDER_SITE_ROUTES.render).toBe('/api/render')
     expect(RENDER_SITE_ROUTES.health).toBe('/api/health')
+  })
+
+  it('exposes a loopback-only render site base url built from the shared port', () => {
+    // 端口漂移会让覆盖渲染整链静默失败（壳层连不上站，报错却与渲染无关），故端口与基准 URL 收紧在此。
+    expect(RENDER_SITE_PORT).toBe(5433)
+    expect(RENDER_SITE_BASE_URL).toBe('http://127.0.0.1:5433')
   })
 })
 
