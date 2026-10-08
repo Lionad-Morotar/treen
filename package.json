@@ -1,0 +1,30 @@
+{
+  "name": "treen",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Treen — macOS 本地截图翻译工具（Electron 壳 + Nuxt 渲染端双工程）",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build:desktop": "pnpm --filter @treen/desktop run build",
+    "start:desktop": "pnpm --filter @treen/desktop run start",
+    "dev:render-site": "pnpm --filter @treen/render-site run dev",
+    "build:render-site": "pnpm --filter @treen/render-site run build",
+    "build": "pnpm -r --if-present run build",
+    "lint": "eslint .",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.15.0",
+    "eslint": "^10.12.0",
+    "eslint-plugin-vue": "^10.11.1",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.3",
+    "vue-eslint-parser": "^10.3.0"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@treen/ipc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "桌面壳与渲染端之间的 IPC 契约",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@treen/shared": "workspace:*"
+  }
+}

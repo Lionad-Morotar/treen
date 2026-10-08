@@ -1,0 +1,20 @@
+{
+  "name": "@treen/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "共享配置层：环境读取与日志脱敏",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.6"
+  }
+}

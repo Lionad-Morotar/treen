@@ -1,0 +1,8 @@
+packages:
+  - apps/*
+  - packages/*
+
+# pnpm 10+ 默认拦截依赖的构建脚本；此处显式放行本仓确实需要执行安装脚本的依赖，
+# 否则 install 以 ERR_PNPM_IGNORED_BUILDS 非零退出，--frozen-lockfile 亦随之失败。
+allowBuilds:
+  esbuild: true
