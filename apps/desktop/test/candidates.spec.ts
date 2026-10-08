@@ -4,6 +4,7 @@ import {
   buildCandidates,
   edgeCandidates,
   intersectRects,
+  isSystemUiBundleId,
   orderCandidates,
   windowCandidates,
   type BorderRect,
@@ -109,6 +110,23 @@ describe('windowsCandidates', () => {
     ])
 
     expect(result).toEqual([candidate(10, 10, 400, 300, 'window')])
+  })
+
+  it('系统 UI 层的判定不区分 bundle id 大小写', () => {
+    // 磁盘上 systemuiserver 是全小写、Spotlight 是驼峰，而文档与直觉常写成另一种拼法；
+    // 逐字节比对会让这些条目静默失配，于是整屏尺寸的系统窗口变成覆盖全屏的候选。
+    const result = windowCandidates(primary, [
+      win(0, 0, 1440, 900, { bundleId: 'com.apple.SystemUIServer' }),
+      win(0, 0, 1440, 900, { bundleId: 'com.apple.systemuiserver' }),
+      win(0, 0, 1440, 900, { bundleId: 'com.apple.spotlight' }),
+      win(0, 0, 1440, 900, { bundleId: 'com.apple.Spotlight' }),
+      win(10, 10, 400, 300, { bundleId: 'com.apple.finder' }),
+    ])
+
+    expect(result).toEqual([candidate(10, 10, 400, 300, 'window')])
+    expect(isSystemUiBundleId('com.apple.spotlight')).toBe(true)
+    expect(isSystemUiBundleId('com.apple.SPOTLIGHT')).toBe(true)
+    expect(isSystemUiBundleId('com.apple.finder')).toBe(false)
   })
 
   it('丢弃窗口枚举器的哨兵矩形（裁剪前拦住，否则裁完就是整块屏）', () => {

@@ -7,8 +7,8 @@ import { DEFAULT_FREEZE_ACCELERATOR, freezeWindowOptions } from '../../src/freez
 import { createSystemWindowSource, frameBorders } from '../../src/highlight/electron-candidates'
 import { bgraToRgba } from '../../src/highlight/pixels'
 import {
-  SYSTEM_UI_BUNDLE_IDS,
   buildCandidates,
+  isSystemUiBundleId,
   windowCandidates,
   type Candidate,
 } from '../../src/highlight/candidates'
@@ -417,7 +417,7 @@ async function verifySystemWindows(): Promise<void> {
     candidates.slice(0, 3),
   )
   // 真实枚举确实会带出系统 UI 层窗口（登录窗常以整屏尺寸出现），它们是过滤器的现实作用对象。
-  const systemUiCount = windows.filter((win) => SYSTEM_UI_BUNDLE_IDS.includes(win.bundleId ?? '')).length
+  const systemUiCount = windows.filter((win) => isSystemUiBundleId(win.bundleId ?? '')).length
   check('原始窗口列表含系统 UI 层窗口，过滤器有作用对象', systemUiCount > 0, {
     systemUiCount,
     total: windows.length,
@@ -431,6 +431,11 @@ async function verifySystemWindows(): Promise<void> {
   // 过滤与剔除的确定性形态用自造列表断言，不依赖本机当时开着哪些窗口。
   const mixed = [
     { bounds: displayLike.bounds, bundleId: 'com.apple.loginwindow' },
+    // 同一个系统进程用两种大小写各写一遍：磁盘上的 systemuiserver 是全小写，
+    // 文档与直觉常写成驼峰，两种都得被同一条规则挡住。
+    { bounds: displayLike.bounds, bundleId: 'com.apple.SystemUIServer' },
+    { bounds: displayLike.bounds, bundleId: 'com.apple.systemuiserver' },
+    { bounds: displayLike.bounds, bundleId: 'com.apple.Spotlight' },
     {
       bounds: { x: displayLike.bounds.x + 10, y: displayLike.bounds.y + 10, width: 200, height: 150 },
       bundleId: 'com.example.app',

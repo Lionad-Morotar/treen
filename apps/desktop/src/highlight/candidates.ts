@@ -54,6 +54,9 @@ export const MAX_CANDIDATE_EXTENT = 20000
  * 归入系统 UI 层的 bundle id，不是用户会去选的窗口。
  * macOS 的窗口枚举会把登录窗、Dock、菜单栏等一并列出，且登录窗常以整屏尺寸出现——
  * 若不过滤，它就成了覆盖全屏的候选，屏幕再无「无候选」区域。
+ *
+ * 拼写取自磁盘上各 .app 的 Info.plist：这套 id 的大小写没有统一规律（controlcenter 全小写、
+ * WindowManager 是驼峰、systemuiserver 又是全小写），照抄文档或凭印象写会静默失配。
  */
 export const SYSTEM_UI_BUNDLE_IDS: readonly string[] = [
   'com.apple.loginwindow',
@@ -61,11 +64,21 @@ export const SYSTEM_UI_BUNDLE_IDS: readonly string[] = [
   'com.apple.WindowManager',
   'com.apple.controlcenter',
   'com.apple.notificationcenterui',
-  'com.apple.SystemUIServer',
-  'com.apple.spotlight',
+  'com.apple.systemuiserver',
+  'com.apple.Spotlight',
   'com.apple.screencaptureui',
   'com.apple.ScreenSaver.Engine',
 ]
+
+const SYSTEM_UI_BUNDLE_ID_SET = new Set(SYSTEM_UI_BUNDLE_IDS.map((id) => id.toLowerCase()))
+
+/**
+ * bundle id 由各进程自行声明，大小写不作保证，比对一律折成小写。
+ * 上面那串拼写是给人看的凭证，判定不能依赖它逐字节正确。
+ */
+export function isSystemUiBundleId(bundleId: string): boolean {
+  return SYSTEM_UI_BUNDLE_ID_SET.has(bundleId.toLowerCase())
+}
 
 /** 判定一条矩形是否值得成为候选：有限数值、两个方向都够大、且不超过荒谬量级。 */
 function isPlausibleRect(rect: Rect): boolean {
@@ -145,7 +158,7 @@ export function windowCandidates(
     if (excludeProcessId !== undefined && win.processId === excludeProcessId) {
       continue
     }
-    if (win.bundleId !== null && win.bundleId !== undefined && SYSTEM_UI_BUNDLE_IDS.includes(win.bundleId)) {
+    if (win.bundleId !== null && win.bundleId !== undefined && isSystemUiBundleId(win.bundleId)) {
       continue
     }
     if (!isPlausibleRect(win.bounds)) {
