@@ -127,7 +127,7 @@ async function verifyOverlayWindow(): Promise<BrowserWindow | null> {
   return window
 }
 
-/** 渲染层探针：读回候选条的几何、命中标记与边框色，供 Node 侧断言。 */
+/** 渲染层探针：读回候选条的几何、命中/锁定标记与边框色，供 Node 侧断言。 */
 const RENDERER_PROBE = `(() => {
   const nodes = [...document.querySelectorAll('[data-testid="freeze-candidate"]')]
   const info = (el) => {
@@ -138,20 +138,28 @@ const RENDERER_PROBE = `(() => {
       width: rect.width,
       height: rect.height,
       hit: el.hasAttribute('data-hit'),
+      locked: el.hasAttribute('data-locked'),
       source: el.getAttribute('data-source'),
       zIndex: getComputedStyle(el).zIndex,
       borderColor: getComputedStyle(el).borderTopColor,
+      backgroundColor: getComputedStyle(el).backgroundColor,
     }
   }
   return {
     count: nodes.length,
     items: nodes.map(info),
     setterType: typeof window.__treenSetCandidates,
+    readerType: typeof window.__treenGetLocked,
+    lockedRegion: typeof window.__treenGetLocked === 'function' ? window.__treenGetLocked() : 'missing',
   }
 })()`
 
 function moveTo(x: number, y: number): string {
   return `document.dispatchEvent(new MouseEvent('mousemove', { clientX: ${x}, clientY: ${y}, bubbles: true })), true`
+}
+
+function clickAt(x: number, y: number): string {
+  return `document.dispatchEvent(new MouseEvent('click', { clientX: ${x}, clientY: ${y}, bubbles: true })), true`
 }
 
 interface RendererSnapshot {
@@ -162,12 +170,24 @@ interface RendererSnapshot {
     width: number
     height: number
     hit: boolean
+    locked: boolean
     source: string | null
     zIndex: string
     borderColor: string
+    backgroundColor: string
   }[]
   setterType: string
+  readerType: string
+  lockedRegion: { x: number; y: number; width: number; height: number } | null | 'missing'
 }
+
+/** 悬停与锁定两轮验证共用同一组候选：外层大、内层小，面积降序与主进程产出次序一致。 */
+const PROBE_CANDIDATES: Candidate[] = [
+  { x: 0, y: 0, width: 400, height: 300, source: 'window' },
+  { x: 50, y: 40, width: 100, height: 80, source: 'edge' },
+]
+const INNER = { x: 50, y: 40, width: 100, height: 80 }
+const OUTER = { x: 0, y: 0, width: 400, height: 300 }
 
 const TRANSPARENT = 'rgba(0, 0, 0, 0)'
 
@@ -183,10 +203,7 @@ async function verifyCandidateHighlight(window: BrowserWindow | null): Promise<v
   }
 
   // 面积降序送入，与主进程 orderCandidates 的输出一致：大的在前（z-index 小），小的在后（叠在上面）。
-  const candidates: Candidate[] = [
-    { x: 0, y: 0, width: 400, height: 300, source: 'window' },
-    { x: 50, y: 40, width: 100, height: 80, source: 'edge' },
-  ]
+  const candidates = PROBE_CANDIDATES
   const snapshot = async (): Promise<RendererSnapshot> =>
     (await window.webContents.executeJavaScript(RENDERER_PROBE)) as RendererSnapshot
 
@@ -268,8 +285,103 @@ async function verifyCandidateHighlight(window: BrowserWindow | null): Promise<v
   )
 }
 
-/** 把 RGBA 原始行（含每行行首过滤器字节）编码成 PNG data URL。 */
-function encodePng(width: number, height: number, rawRows: Buffer): string {
+function sameRect(
+  value: { x: number; y: number; width: number; height: number } | null | 'missing',
+  expected: { x: number; y: number; width: number; height: number },
+): boolean {
+  return (
+    value !== null &&
+    value !== 'missing' &&
+    value.x === expected.x &&
+    value.y === expected.y &&
+    value.width === expected.width &&
+    value.height === expected.height
+  )
+}
+
+/**
+ * 点击锁定选区：点击命中的候选条即把该区域设为选区，主进程经 __treenGetLocked 拉取。
+ * 与悬停高亮同一套命中判定（elementFromPoint），故这里只断言锁定态自身的性质：
+ * 锁定标记落在被点中的那条、拉取面读出同一几何、锁定不改变几何、后续悬停与改锁仍然可用。
+ */
+async function verifySelectionLock(window: BrowserWindow | null): Promise<void> {
+  if (window === null || window.isDestroyed()) {
+    check('选区锁定冒烟有可用的覆盖窗', false)
+    return
+  }
+
+  const snapshot = async (): Promise<RendererSnapshot> =>
+    (await window.webContents.executeJavaScript(RENDERER_PROBE)) as RendererSnapshot
+
+  await window.webContents.executeJavaScript(
+    `window.__treenSetCandidates(${JSON.stringify(PROBE_CANDIDATES)})`,
+  )
+
+  const readerType = (await snapshot()).readerType
+  check('渲染层暴露 __treenGetLocked', readerType === 'function', readerType)
+
+  const initial = await snapshot()
+  check('未点击时没有锁定选区', initial.lockedRegion === null, initial.lockedRegion)
+  check('未点击时没有任何候选带锁定标记', initial.items.every((item) => !item.locked))
+
+  // 点内层：锁定的应是被点中的那条，几何取自注入的显示器相对 DIP。
+  await window.webContents.executeJavaScript(clickAt(100, 80))
+  const inner = await snapshot()
+  check(
+    '页面上任意位置的点击都只锁定被点中的候选条',
+    inner.items[0]?.locked === false && inner.items[1]?.locked === true,
+    inner.items.map((item) => item.locked),
+  )
+  check('锁定后读到该选区的几何', sameRect(inner.lockedRegion, INNER), inner.lockedRegion)
+  check(
+    '锁定态边框换成锁定色且几何不变（透明边框占位）',
+    inner.items[1] !== undefined &&
+      inner.items[1].borderColor !== TRANSPARENT &&
+      inner.items[1].x === initial.items[1]?.x &&
+      inner.items[1].y === initial.items[1]?.y &&
+      inner.items[1].width === initial.items[1]?.width &&
+      inner.items[1].height === initial.items[1]?.height,
+    { before: initial.items[1], after: inner.items[1] },
+  )
+
+  // 锁定之后悬停仍然工作：移出内层时外层拿到命中标记，而锁定还在内层。
+  await window.webContents.executeJavaScript(moveTo(300, 200))
+  const hovered = await snapshot()
+  check(
+    '锁定不妨碍悬停高亮继续工作',
+    hovered.items[0]?.hit === true && hovered.items[1]?.locked === true,
+    hovered.items,
+  )
+  check('悬停到别的候选时锁定不变', sameRect(hovered.lockedRegion, INNER), hovered.lockedRegion)
+
+  // 点外层：锁转移，内层失去锁定标记（页面上同时只有一条锁定）。
+  await window.webContents.executeJavaScript(clickAt(300, 200))
+  const moved = await snapshot()
+  check(
+    '再次点击把锁定转移到新命中的候选',
+    moved.items[0]?.locked === true && moved.items[1]?.locked === false,
+    moved.items.map((item) => item.locked),
+  )
+  check('锁定转移后读到新选区的几何', sameRect(moved.lockedRegion, OUTER), moved.lockedRegion)
+
+  // 点空白处：不改动当前锁定。
+  await window.webContents.executeJavaScript(clickAt(1200, 900))
+  const empty = await snapshot()
+  check('点击空白处不改变锁定', sameRect(empty.lockedRegion, OUTER), empty.lockedRegion)
+
+  // 候选整批换新后旧锁定元素已不在文档里，读取面必须回到「无锁定」而不是指向幽灵元素。
+  await window.webContents.executeJavaScript(
+    `window.__treenSetCandidates(${JSON.stringify([{ x: 600, y: 500, width: 80, height: 60, source: 'edge' }])})`,
+  )
+  const reinjected = await snapshot()
+  check(
+    '候选重新注入后锁定被清空',
+    reinjected.lockedRegion === null && reinjected.items.every((item) => !item.locked),
+    { region: reinjected.lockedRegion, locks: reinjected.items.map((item) => item.locked) },
+  )
+}
+
+/** 把 RGBA 原始行（含每行行首过滤器字节）编码成 PNG data URL。 */function encodePng(width: number, height: number, rawRows: Buffer): string {
   const chunk = (type: string, data: Buffer): Buffer => {
     const length = Buffer.alloc(4)
     length.writeUInt32BE(data.length)
@@ -512,6 +624,7 @@ app.whenReady().then(async () => {
     await verifyShortcuts()
     const window = await verifyOverlayWindow()
     await verifyCandidateHighlight(window)
+    await verifySelectionLock(window)
     await verifyEdgeDetection()
     await verifySystemWindows()
     if (window !== null && !window.isDestroyed()) {

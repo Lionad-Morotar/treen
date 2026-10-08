@@ -20,6 +20,10 @@
         /* 高亮色在此单点定义；科技向色板的集中定稿属渲染样式切片，届时只需改这一处。 */
         --treen-highlight: rgba(8, 174, 236, 0.95);
         --treen-highlight-fill: rgba(8, 174, 236, 0.12);
+        /* 锁定态与悬停态同色系不同强度：锁定是已提交的选区，必须比悬停更实、且在被悬停
+           别的候选时仍然留着，否则用户看不出自己锁了哪一块。 */
+        --treen-locked: rgba(126, 226, 255, 0.98);
+        --treen-locked-fill: rgba(8, 174, 236, 0.32);
       }
 
       #treen-freeze-frame {
@@ -57,6 +61,13 @@
         border-color: var(--treen-highlight);
         background-color: var(--treen-highlight-fill);
       }
+
+      /* 锁定规则排在悬停之后：同一元素同时被悬停与选中时锁定态胜出（同特异度后写者赢），
+         否则鼠标划过锁定的那块时它会「变淡」，看起来像被取消。 */
+      .treen-candidate[data-locked="true"] {
+        border-color: var(--treen-locked);
+        background-color: var(--treen-locked-fill);
+      }
     </style>
   </head>
   <body>
@@ -76,11 +87,68 @@
 
       var candidateLayer = document.getElementById('treen-candidates')
       var hitElement = null
+      var lockedElement = null
+      var lockedRect = null
+
+      /**
+       * 命中判定：候选条自己吃指针事件（父层 pointer-events: none），浏览器给出的命中结果
+       * 就是层叠在最上面的那条，即最具体的候选。悬停与点击共用它，两处判定不会各自漂移。
+       */
+      function hitTest(x, y) {
+        var element = document.elementFromPoint(x, y)
+        return element && element.classList && element.classList.contains('treen-candidate')
+          ? element
+          : null
+      }
 
       function clearHit() {
         if (hitElement !== null) {
           hitElement.removeAttribute('data-hit')
           hitElement = null
+        }
+      }
+
+      /**
+       * 锁定选区的几何取自候选条自己的样式值，那正是主进程注入的显示器相对 DIP；
+       * 改用 getBoundingClientRect 会把窗口的缩放与偏移掺进来，主进程照它裁像素就会偏。
+       */
+      function candidateRect(element) {
+        return {
+          x: parseFloat(element.style.left),
+          y: parseFloat(element.style.top),
+          width: parseFloat(element.style.width),
+          height: parseFloat(element.style.height),
+        }
+      }
+
+      function clearLock() {
+        if (lockedElement !== null) {
+          lockedElement.removeAttribute('data-locked')
+          lockedElement = null
+        }
+        lockedRect = null
+      }
+
+      function lock(element) {
+        if (element === lockedElement) {
+          return
+        }
+        clearLock()
+        element.setAttribute('data-locked', 'true')
+        lockedElement = element
+        lockedRect = candidateRect(element)
+      }
+
+      /** 主进程读取当前锁定选区的唯一入口：拷贝原始像素现在用它，后续 OCR 也用它。 */
+      window.__treenGetLocked = function () {
+        if (lockedRect === null) {
+          return null
+        }
+        return {
+          x: lockedRect.x,
+          y: lockedRect.y,
+          width: lockedRect.width,
+          height: lockedRect.height,
         }
       }
 
@@ -91,6 +159,8 @@
        */
       window.__treenSetCandidates = function (candidates) {
         clearHit()
+        // 候选整批换新后，先前锁定的那条已经不在文档里，留着它只会让读取面指向幽灵元素。
+        clearLock()
         candidateLayer.replaceChildren()
         if (!Array.isArray(candidates)) {
           return
@@ -125,11 +195,7 @@
        * （真链路 smoke 靠合成 mousemove 读数），后续「点击锁定候选区域」也要复用同一个命中判定。
        */
       document.addEventListener('mousemove', function (event) {
-        var element = document.elementFromPoint(event.clientX, event.clientY)
-        var next =
-          element && element.classList && element.classList.contains('treen-candidate')
-            ? element
-            : null
+        var next = hitTest(event.clientX, event.clientY)
         if (next === hitElement) {
           return
         }
@@ -137,6 +203,17 @@
         if (next !== null) {
           next.setAttribute('data-hit', 'true')
           hitElement = next
+        }
+      })
+
+      /**
+       * 点击即锁定当前命中的候选。点在空白处不改动已有锁定：取消的语义归 Escape 与
+       * 再次触发冻结热键，误点一下不该把已经选好的区域丢掉。
+       */
+      document.addEventListener('click', function (event) {
+        var element = hitTest(event.clientX, event.clientY)
+        if (element !== null) {
+          lock(element)
         }
       })
     </script>
