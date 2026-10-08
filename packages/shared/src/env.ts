@@ -17,7 +17,26 @@ export interface ReadDeepSeekKeyOptions {
   env?: NodeJS.ProcessEnv
 }
 
-const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
+/**
+ * 本模块所在目录，作为未显式指定 envFile 时向上查找 .env.local 的起点。
+ *
+ * 锚点随宿主形态变化：源码直出（vitest、渲染端 import）跑在 ESM 里，用 import.meta.url；
+ * 主进程被打包成 CJS 产物后 rolldown 会把 import.meta 整体替成空对象，此时取 __dirname；
+ * 两者都取不到再退回 cwd。关键是绝不无条件访问 import.meta.url——CJS 产物下它是
+ * undefined，fileURLToPath 会在模块加载期抛错，让整个应用起不来。
+ */
+function resolveModuleDirectory(): string {
+  const metaUrl = (import.meta as { url?: string }).url
+  if (typeof metaUrl === 'string' && metaUrl.length > 0) {
+    return dirname(fileURLToPath(metaUrl))
+  }
+  if (typeof __dirname === 'string' && __dirname.length > 0) {
+    return __dirname
+  }
+  return process.cwd()
+}
+
+const MODULE_DIR = resolveModuleDirectory()
 
 /**
  * 自 startDir 逐级向上查找 .env.local，止于仓库根（见 WORKSPACE_MARKER）或家目录。

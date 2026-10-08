@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Treen 桌面外壳（Electron）",
-  "main": "./out/main.js",
+  "main": "./out/main.cjs",
   "scripts": {
     "build": "vite build",
     "start": "electron .",
+    "smoke:app": "vite build && node test/e2e/app-boot-smoke.mjs",
+    "smoke:freeze": "vite build --config vite.config.smoke.ts && electron out/freeze-smoke.cjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
