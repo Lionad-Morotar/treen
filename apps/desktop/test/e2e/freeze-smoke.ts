@@ -424,7 +424,7 @@ async function verifyLockedRegionPull(window: BrowserWindow | null): Promise<voi
   const pulled = await readLockedRegion(window)
   check('主进程跨进程读回渲染层锁定的选区', JSON.stringify(pulled) === JSON.stringify(INNER), pulled)
 
-  // 页面里没有该原语时（未来某版 overla.html 漏了它）读取面返回空而不是抛错，
+  // 页面里没有该原语时（未来某版 overlay.html 漏了它）读取面返回空而不是抛错，
   // 于是「没有锁定」这条路径不会因为一次注入失配把冻结期拷贝整个打挂。
   const bare = new BrowserWindow({ show: false })
   await bare.loadURL('data:text/html,<h1>no lock here</h1>')
@@ -704,7 +704,8 @@ function near(actual: Rgba, expected: { r: number; g: number; b: number }): bool
   return close(actual.r, expected.r) && close(actual.g, expected.g) && close(actual.b, expected.b) && actual.a === 255
 }
 
-/** 把 RGBA 原始行（含每行行首过滤器字节）编码成 PNG data URL。 */function encodePng(width: number, height: number, rawRows: Buffer): string {
+/** 把 RGBA 原始行（含每行行首过滤器字节）编码成 PNG data URL。 */
+function encodePng(width: number, height: number, rawRows: Buffer): string {
   const chunk = (type: string, data: Buffer): Buffer => {
     const length = Buffer.alloc(4)
     length.writeUInt32BE(data.length)
