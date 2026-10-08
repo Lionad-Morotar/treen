@@ -5,9 +5,14 @@ import {
   type CaptureSourceLike,
   type DisplayLike,
   type Point,
+  type Rect,
   type Size,
 } from './geometry'
-import { DEFAULT_FREEZE_ACCELERATOR, FREEZE_EXIT_ACCELERATOR } from './window-options'
+import {
+  DEFAULT_FREEZE_ACCELERATOR,
+  FREEZE_COPY_ACCELERATOR,
+  FREEZE_EXIT_ACCELERATOR,
+} from './window-options'
 import type { ShortcutManager } from './shortcuts'
 import type { Candidate } from '../highlight/candidates'
 
@@ -29,6 +34,19 @@ export interface FreezeFrame extends CaptureSourceLike {
   dataUrl: string
 }
 
+/**
+ * 一屏的选区拷贝素材：原始截屏帧、其显示器几何、渲染层当前锁定的选区。
+ *
+ * 选区真源在渲染层（点击发生在那里），主进程按需向覆盖窗拉取而不是维持一份镜像：
+ * 覆盖窗是 contextIsolation + sandbox 的页面，镜像一份就要造反向 IPC 通道。
+ */
+export interface SelectionSource {
+  display: DisplayLike
+  frame: FreezeFrame
+  /** 显示器相对 DIP；未锁定时为 null，调用方按整屏处理 */
+  locked: Rect | null
+}
+
 /** 覆盖窗句柄：控制器只依赖这几个动作，不耦合 BrowserWindow 具体类型。 */
 export interface OverlayWindowHandle {
   id: number
@@ -38,6 +56,8 @@ export interface OverlayWindowHandle {
   isDestroyed(): boolean
   /** 注入该屏的候选区域（悬停高亮与后续框选的数据源）；窗口已销毁时实现方须静默忽略。 */
   setCandidates(candidates: readonly Candidate[]): void
+  /** 读取该屏的选区素材；窗口已失效时返回 null，由调用方跳过这一屏。 */
+  readSelection(): Promise<SelectionSource | null>
 }
 
 export interface FreezeWindowFactory {
@@ -61,6 +81,15 @@ export interface FreezeControllerDeps {
   triggerAccelerator?: string
   /** 退出键；缺省用 Escape */
   exitAccelerator?: string
+  /** 拷贝键；缺省用内置默认 */
+  copyAccelerator?: string
+  /**
+   * 冻结期把原始截图拷进剪贴板。缺省即不注册拷贝键，冻结只剩画面与出口。
+   *
+   * 返回值不被等待（全局快捷键没有等待方），同步抛错与 Promise 拒绝都会收进日志：
+   * 拷贝失败不该把冻结态整个拆掉，但也不能静默无反应。
+   */
+  copySelection?: () => unknown
   /** 决定进入冻结时聚焦哪块屏（通常取光标所在屏）；缺省聚焦第一块可用屏 */
   pointOfInterest?: () => Point
   /**
@@ -87,17 +116,47 @@ export interface FreezeController {
 export function createFreezeController(deps: FreezeControllerDeps): FreezeController {
   const triggerAccelerator = deps.triggerAccelerator ?? DEFAULT_FREEZE_ACCELERATOR
   const exitAccelerator = deps.exitAccelerator ?? FREEZE_EXIT_ACCELERATOR
+  const copyAccelerator = deps.copyAccelerator ?? FREEZE_COPY_ACCELERATOR
 
   let created: OverlayWindowHandle[] = []
   let frozen = false
   let entering: Promise<void> | null = null
   let disposed = false
 
+  /** 冻结期的快捷键只在冻结期存活：进入时注册、任何退出路径上释放。 */
+  function releaseShortcuts(): void {
+    deps.shortcuts.unregister(exitAccelerator)
+    deps.shortcuts.unregister(copyAccelerator)
+  }
+
+  /**
+   * 注册拷贝键。与退出键不同，它注册不上只记日志：退出键是冻结态唯一的常规出口，
+   * 缺失即形成无出口的置顶透明层；拷贝只是便利功能，代价面不对称。
+   */
+  function registerCopyShortcut(): void {
+    const copy = deps.copySelection
+    if (copy === undefined) {
+      return
+    }
+    const registered = deps.shortcuts.register(copyAccelerator, () => {
+      // handler 不能是 async：全局快捷键不消费返回值，异常只会变成未处理拒绝。
+      void Promise.resolve()
+        .then(() => copy())
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          deps.logger?.warn(`拷贝冻结画面失败：${message}`)
+        })
+    })
+    if (!registered) {
+      deps.logger?.warn(`拷贝键 ${copyAccelerator} 注册失败，冻结期无法拷贝原始截图`)
+    }
+  }
+
   function exit(): void {
     if (!frozen) {
       return
     }
-    deps.shortcuts.unregister(exitAccelerator)
+    releaseShortcuts()
     closeAll(created)
     created = []
     frozen = false
@@ -114,15 +173,16 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     if (!exitRegistered) {
       throw new Error(`无法进入冻结态：退出键 ${exitAccelerator} 注册失败`)
     }
+    registerCopyShortcut()
 
     const opened: OverlayWindowHandle[] = []
     try {
       const thumbnailSize = captureThumbnailSize(displays)
       const frames = await deps.captureFrames(thumbnailSize)
 
-      // 截屏在途期间可能已经 dispose（应用退出）或 exit；此时不能再建窗，直接收尾退出键。
+      // 截屏在途期间可能已经 dispose（应用退出）或 exit；此时不能再建窗，直接收尾快捷键。
       if (disposed) {
-        deps.shortcuts.unregister(exitAccelerator)
+        releaseShortcuts()
         return
       }
 
@@ -145,7 +205,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       focusWindowFor(displays, opened)
     } catch (error) {
       closeAll(opened)
-      deps.shortcuts.unregister(exitAccelerator)
+      releaseShortcuts()
       throw error
     }
   }
@@ -175,8 +235,6 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     if (build === undefined) {
       return
     }
-    // 先落进微任务再加链：返回值是 Promise 只是类型约定，不约束实现一定是 async 函数，
-    // 一个同步抛错的实现会让异常直接穿出 runEnter 的 catch，把整个冻结拆掉。
     // 先落进微任务再加链：返回值是 Promise 只是类型约定，不约束实现一定是 async 函数，
     // 一个同步抛错的实现会让异常直接穿出 runEnter 的 catch，把整个冻结拆掉。
     void Promise.resolve()

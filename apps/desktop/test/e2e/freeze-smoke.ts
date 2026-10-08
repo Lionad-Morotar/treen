@@ -1,9 +1,15 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { deflateSync } from 'node:zlib'
-import { BrowserWindow, app, globalShortcut, nativeImage, screen } from 'electron'
+// ClipboardItem 在主进程不是全局量（那是渲染端的 Web API），必须从 electron 模块取。
+import { BrowserWindow, ClipboardItem, app, clipboard, globalShortcut, nativeImage, screen } from 'electron'
 import { ShortcutManager } from '../../src/freeze/shortcuts'
 import { DEFAULT_FREEZE_ACCELERATOR, freezeWindowOptions } from '../../src/freeze/window-options'
+import { readLockedRegion } from '../../src/freeze/electron-adapters'
+import { createSelectionCopier } from '../../src/selection/selection'
+import { frameCropWriter } from '../../src/selection/electron-clipboard'
+import type { SelectionSource } from '../../src/freeze/controller'
+import type { DisplayLike } from '../../src/freeze/geometry'
 import {
   MAX_DETECT_EXTENT,
   createSystemWindowSource,
@@ -25,12 +31,17 @@ import {
  * - freezeWindowOptions 产出的选项被真实 BrowserWindow 接受，几何落在显示器上、置顶、初始隐藏
  * - overlay.html 能被 loadFile 加载，__treenSetFrame 帧注入原语可用
  * - 候选区域的悬停高亮：透明边框占位、命中只换色不位移、离开全部候选即无高亮
+ * - 点击锁定选区与主进程的拉取面：__treenGetLocked 跨进程读回锁定几何
  * - 边缘检测全链路：真 PNG 解码 → 通道序搬运 → detectBorders 检出预期矩形
+ * - 选区拷贝全链路：真 nativeImage 裁剪 → 真剪贴板写入 → 从剪贴板读回像素校验尺度与 alpha
  *
  * 刻意不覆盖：
  * - 真实截屏（desktopCapturer）：macOS 需屏幕录制授权，自动化会话下会弹系统授权框落到用户桌面；
- *   该路径由注入式单测覆盖，其真机像素验收顺延人工。边缘检测以自造 PNG 走 nativeImage 同一条解码路径。
+ *   该路径由注入式单测覆盖，其真机像素验收顺延人工。边缘检测与拷贝都以自造 PNG 走 nativeImage 同一条解码路径。
  * - 覆盖窗的显示：本脚本全程 show:false，不在用户桌面上弹出全屏置顶层。
+ *
+ * 副作用与还原：选区拷贝必须落到真实系统剪贴板（异步剪贴板 API 的形态错误只有这样才暴露），
+ * 而本脚本跑在用户的日常会话里。故写入前先读一份现值，验证完原样写回，脚本不留痕迹。
  */
 
 interface CheckResult {
@@ -381,6 +392,224 @@ async function verifySelectionLock(window: BrowserWindow | null): Promise<void> 
   )
 }
 
+/**
+ * 主进程侧的拉取面：真跑一次 executeJavaScript 跨进程读回渲染层锁定的选区。
+ * 单测对这个通道是结构性盲区（替身里没有真的渲染层），它只有真链路能证明。
+ */
+async function verifyLockedRegionPull(window: BrowserWindow | null): Promise<void> {
+  if (window === null || window.isDestroyed()) {
+    check('锁定拉取冒烟有可用的覆盖窗', false)
+    return
+  }
+
+  await window.webContents.executeJavaScript(
+    `window.__treenSetCandidates(${JSON.stringify(PROBE_CANDIDATES)})`,
+  )
+  check('渲染层未锁定时主进程读到 null', (await readLockedRegion(window)) === null)
+
+  await window.webContents.executeJavaScript(clickAt(100, 80))
+  const pulled = await readLockedRegion(window)
+  check('主进程跨进程读回渲染层锁定的选区', JSON.stringify(pulled) === JSON.stringify(INNER), pulled)
+
+  // 页面里没有该原语时（未来某版 overla.html 漏了它）读取面返回空而不是抛错，
+  // 于是「没有锁定」这条路径不会因为一次注入失配把冻结期拷贝整个打挂。
+  const bare = new BrowserWindow({ show: false })
+  await bare.loadURL('data:text/html,<h1>no lock here</h1>')
+  check('页面没有读取原语时返回 null', (await readLockedRegion(bare)) === null)
+
+  bare.destroy()
+  check('窗口已销毁时返回 null', (await readLockedRegion(bare)) === null)
+}
+
+/** 四象限加透明块的探针图：颜色分区让裁剪的偏移与尺度错误无从躲藏。 */
+function buildCopyProbePng(width: number, height: number): string {
+  const raw = Buffer.alloc(height * (1 + width * 4))
+  for (let y = 0; y < height; y += 1) {
+    const rowStart = y * (1 + width * 4)
+    raw[rowStart] = 0 // 过滤器：None
+    for (let x = 0; x < width; x += 1) {
+      const offset = rowStart + 1 + x * 4
+      // R 由左半给出、G 由上半给出：两个轴各有一条颜色分界线，裁错偏移或尺度会立刻显形。
+      raw[offset] = x < width / 2 ? 255 : 0
+      raw[offset + 1] = y < height / 2 ? 255 : 0
+      raw[offset + 2] = 0
+      // 左上角一块全透明，用于验证 PNG 链路把 alpha 原样带过剪贴板。
+      raw[offset + 3] = x < width / 4 && y < height / 4 ? 0 : 255
+    }
+  }
+  return encodePng(width, height, raw)
+}
+
+interface Rgba {
+  r: number
+  g: number
+  b: number
+  a: number
+}
+
+/**
+ * 选区拷贝全链路：真裁剪 → 真剪贴板 → 读回像素校验。
+ *
+ * 探针关系刻意设成 2x 屏：显示器 400×300 DIP、帧位图 800×600 像素，于是「按位图像素裁」
+ * 与「按 DIP 裁」的结果相差一倍，尺度错误无处可藏。拷贝区域还刻意跨过颜色分界线，
+ * 偏移错一个像素就会读到隔壁象限的颜色。
+ */
+async function verifyClipboardCopy(): Promise<void> {
+  const display: DisplayLike = {
+    id: 9001,
+    scaleFactor: 2,
+    bounds: { x: 0, y: 0, width: 400, height: 300 },
+  }
+  const frame = {
+    id: 'probe',
+    displayId: '9001',
+    size: { width: 800, height: 600 },
+    dataUrl: buildCopyProbePng(800, 600),
+  }
+  // 显示器相对 DIP 的选区；帧位图坐标应对应 (100,100) 起、400×300 大。
+  const locked = { x: 50, y: 50, width: 200, height: 150 }
+
+  const backup = await clipboard.read()
+  const backupTypes = backup.map((item) => item.types.join('+'))
+  check(
+    '拷贝冒烟开工前能读到剪贴板原状（类型清单见 detail）',
+    backup.every((item) => Array.isArray(item.types)),
+    backupTypes,
+  )
+
+  try {
+    const copier = createSelectionCopier({
+      readSources: async (): Promise<readonly SelectionSource[]> => [{ display, frame, locked }],
+      writeCrop: frameCropWriter(),
+    })
+
+    const outcome = await copier()
+    check(
+      '锁定选区按帧位图比例换算成像素矩形',
+      JSON.stringify(outcome) ===
+        JSON.stringify({ kind: 'copied', displayId: 9001, fromLock: true, pixelRect: { x: 100, y: 100, width: 400, height: 300 } }),
+      outcome,
+    )
+
+    const cropped = await readClipboardImage()
+    check('剪贴板里能按 image/png 读回图像', cropped !== null)
+    if (cropped !== null) {
+      const { size, pixel } = cropped
+      check(
+        'HiDPI 屏上拷出的是位图原生像素而不是 DIP 尺寸',
+        size.width === 400 && size.height === 300,
+        size,
+      )
+      const transparent = pixel(10, 10)
+      check('帧里的透明像素在剪贴板里仍是透明的', transparent.a === 0, transparent)
+      const left = pixel(150, 10)
+      check('左上象限的黄色原样带过', near(left, { r: 255, g: 255, b: 0 }), left)
+      const right = pixel(350, 10)
+      check('裁剪的横向偏移正确（越过 x 分界线读到绿色）', near(right, { r: 0, g: 255, b: 0 }), right)
+      const bottom = pixel(10, 250)
+      check('裁剪的纵向偏移正确（越过 y 分界线读到红色）', near(bottom, { r: 255, g: 0, b: 0 }), bottom)
+    }
+
+    const whole = createSelectionCopier({
+      readSources: async (): Promise<readonly SelectionSource[]> => [{ display, frame, locked: null }],
+      writeCrop: frameCropWriter(),
+    })
+    const wholeOutcome = await whole()
+    check(
+      '未锁定时拷整幅原始帧',
+      wholeOutcome.kind === 'copied' && !wholeOutcome.fromLock,
+      wholeOutcome,
+    )
+    const fullFrame = await readClipboardImage()
+    check(
+      '整幅拷贝的像素等于帧位图尺寸',
+      fullFrame !== null && fullFrame.size.width === 800 && fullFrame.size.height === 600,
+      fullFrame?.size,
+    )
+  } finally {
+    // 还原用户现场：无论断言成败都要把开工前的内容写回去，不能让验收动作留在用户的剪贴板里。
+    const rebuilt = await rebuildClipboardItems(backup)
+    if (rebuilt.length > 0) {
+      await clipboard.write(rebuilt)
+    } else {
+      clipboard.clear()
+    }
+  }
+
+  const restored = (await clipboard.read()).map((item) => item.types.join('+'))
+  check(
+    '剪贴板内容已还原成开工前的样子',
+    restored.join('|') === backupTypes.join('|'),
+    { before: backupTypes, after: restored },
+  )
+}
+
+/**
+ * 把开工前读到的剪贴板内容重建成可写回的条目。
+ *
+ * clipboard.write 明确拒绝 write 一个来自 clipboard.read 的 ClipboardItem，必须新建；
+ * 少数平台类型（文件承诺一类）不给可序列化载荷，只能略过，那一部分格式在还原后会丢，
+ * 这是把验收动作压在用户现场上必须认下的代价。
+ */
+async function rebuildClipboardItems(
+  items: readonly Electron.ClipboardItem[],
+): Promise<Electron.ClipboardItem[]> {
+  const rebuilt: Electron.ClipboardItem[] = []
+  for (const item of items) {
+    const entries: Record<string, Blob | Electron.ClipboardBookmark> = {}
+    for (const type of item.types) {
+      try {
+        entries[type] = await item.getType(type)
+      } catch {
+        // 该类型没有可重建的载荷，跳过。
+      }
+    }
+    if (Object.keys(entries).length > 0) {
+      rebuilt.push(new ClipboardItem(entries))
+    }
+  }
+  return rebuilt
+}
+
+/** 从剪贴板按 image/png 读回图像，并给出按像素取值的小工具。 */
+async function readClipboardImage(): Promise<{
+  size: { width: number; height: number }
+  pixel(x: number, y: number): Rgba
+} | null> {
+  const items = await clipboard.read()
+  const item = items.find((entry) => entry.types.includes('image/png'))
+  if (item === undefined) {
+    check('剪贴板提供 image/png 表示', false, items.map((entry) => entry.types))
+    return null
+  }
+  const blob = await item.getType('image/png')
+  const image = nativeImage.createFromBuffer(Buffer.from(await blob.arrayBuffer()))
+  const size = image.getSize()
+  const bitmap = image.toBitmap()
+  return {
+    size,
+    // toBitmap 是 BGRA 序（见 verifyEdgeDetection 的同款确认）。
+    pixel: (x, y) => {
+      const offset = (y * size.width + x) * 4
+      return {
+        b: bitmap[offset] ?? -1,
+        g: bitmap[offset + 1] ?? -1,
+        r: bitmap[offset + 2] ?? -1,
+        a: bitmap[offset + 3] ?? -1,
+      }
+    },
+  }
+}
+
+/**
+ * 颜色比对给一点容差：剪贴板在系统侧可能经过一次色彩空间描述往返，纯色不该因此判负，
+ * 但容差小到足以识别出「读到了隔壁象限」。
+ */
+function near(actual: Rgba, expected: { r: number; g: number; b: number }): boolean {
+  const close = (a: number, b: number) => Math.abs(a - b) <= 8
+  return close(actual.r, expected.r) && close(actual.g, expected.g) && close(actual.b, expected.b) && actual.a === 255
+}
+
 /** 把 RGBA 原始行（含每行行首过滤器字节）编码成 PNG data URL。 */function encodePng(width: number, height: number, rawRows: Buffer): string {
   const chunk = (type: string, data: Buffer): Buffer => {
     const length = Buffer.alloc(4)
@@ -625,8 +854,10 @@ app.whenReady().then(async () => {
     const window = await verifyOverlayWindow()
     await verifyCandidateHighlight(window)
     await verifySelectionLock(window)
+    await verifyLockedRegionPull(window)
     await verifyEdgeDetection()
     await verifySystemWindows()
+    await verifyClipboardCopy()
     if (window !== null && !window.isDestroyed()) {
       window.destroy()
     }

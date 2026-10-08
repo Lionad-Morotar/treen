@@ -99,6 +99,41 @@ export function toWindowRect(global: Rect, windowBounds: Rect): Rect {
 }
 
 /**
+ * 帧位图与显示器 DIP 之间的换算比例，横纵分别给出。
+ *
+ * 除 scaleFactor 是错的：截屏缩略图对所有屏共用一个上界尺寸（见 captureThumbnailSize），
+ * 较小的屏会被缩放填进这个上界，其位图尺寸因此与物理像素不等。用「位图尺寸 ÷ DIP 尺寸」
+ * 的实测比值对这种缩放天然成立。
+ */
+export function frameScaleOf(display: DisplayLike, frameSize: Size): Size {
+  return {
+    width: frameSize.width > 0 ? frameSize.width / display.bounds.width : 0,
+    height: frameSize.height > 0 ? frameSize.height / display.bounds.height : 0,
+  }
+}
+
+/**
+ * 显示器相对 DIP 矩形换算成帧位图的像素裁剪矩形：取整并裁到帧内。
+ *
+ * 返回 null 而不是一张空图：完全落在帧外、或换算退化成零面积时，调用方该放弃这次动作
+ * 并出声，悄悄交出一张空图会让下游以为拿到了有效像素。
+ */
+export function dipRectToFrameRect(rect: Rect, display: DisplayLike, frameSize: Size): Rect | null {
+  const scale = frameScaleOf(display, frameSize)
+  if (scale.width <= 0 || scale.height <= 0) {
+    return null
+  }
+  const left = Math.max(0, Math.round(rect.x * scale.width))
+  const top = Math.max(0, Math.round(rect.y * scale.height))
+  const right = Math.min(frameSize.width, Math.round((rect.x + rect.width) * scale.width))
+  const bottom = Math.min(frameSize.height, Math.round((rect.y + rect.height) * scale.height))
+  if (right - left <= 0 || bottom - top <= 0) {
+    return null
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top }
+}
+
+/**
  * 命中测试：哪个显示器包含该全局点。
  * 边界取半开区间 [x, x+width)，使相邻两屏的公共边不会被两块屏同时认领。
  */

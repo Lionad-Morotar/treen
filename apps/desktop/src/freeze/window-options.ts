@@ -12,6 +12,14 @@ export const DEFAULT_FREEZE_ACCELERATOR = 'CommandOrControl+Shift+X'
 export const FREEZE_EXIT_ACCELERATOR = 'Escape'
 
 /**
+ * 冻结期拷贝原始截图的键。
+ *
+ * 它只在冻结这一模态态内注册（进入时注册、退出时注销），因此覆盖系统 Cmd+C 的作用域被限制在
+ * 用户正看着冻结覆盖层的那段时间里，不会影响其它应用。
+ */
+export const FREEZE_COPY_ACCELERATOR = 'CommandOrControl+C'
+
+/**
  * 冻结覆盖窗的构造选项，一屏一窗。
  *
  * 关键选项的取舍：
