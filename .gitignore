@@ -1,0 +1,14 @@
+node_modules/
+dist/
+out/
+.output/
+.nuxt/
+.vite/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
