@@ -121,4 +121,18 @@ describe('createOcrReader', () => {
     ).rejects.toThrow()
     expect(recognize).not.toHaveBeenCalled()
   })
+
+  it('越界选区被钳制后，落点按钳制矩形而非原选区换算', async () => {
+    // 识别只覆盖钳制后的 ROI（左边界外的 100 DIP 被切掉），落点也必须收窄到同一矩形，
+    // 否则译文会整片右移出选区。
+    const recognize = vi.fn(async () => ({
+      observations: [obs('x', { x: 0.5, y: 0.5, width: 0.1, height: 0.1 })],
+    }))
+    const reader = createOcrReader({ recognize })
+
+    const blocks = await reader(frame(), { x: -100, y: 0, width: 400, height: 200 }, display)
+
+    // 钳制后 ROI 宽 300（0–0.75×400）：0.5 落在 150，而不是未钳制的 −100 + 0.5×400 = 100。
+    expect(blocks[0]?.box).toEqual({ x: 150, y: 100, width: 30, height: 20 })
+  })
 })

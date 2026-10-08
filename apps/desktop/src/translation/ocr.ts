@@ -87,7 +87,7 @@ export interface OcrReaderDeps {
  * 生成「读一屏锁定区域」的动作。
  *
  * 输入是整幅帧 + 选区：识别引擎按 ROI 只报告选区内文字，返回的包围盒是 ROI 相对归一坐标，
- * 于是映射回 DIP 只是一次线性变换（选区原点 + 归一值 × 选区尺寸），不再需要「帧实测比值」那一层。
+ * 于是映射回 DIP 只是一次线性变换（ROI 原点 + 归一值 × ROI 尺寸），不再需要「帧实测比值」那一层。
  * 未识别到文字返回空数组（正常态，非错误）；选区换算不出有效 ROI 才抛错。
  */
 export function createOcrReader(deps: OcrReaderDeps) {
@@ -96,15 +96,24 @@ export function createOcrReader(deps: OcrReaderDeps) {
     if (roi === null) {
       throw new Error(`无法识别：选区 ${JSON.stringify(region)} 换算不出有效 ROI`)
     }
+    // 识别只覆盖钳制后的 ROI，映射必须用同一个矩形：若拿未钳制的 region 展开，
+    // 越界选区会识别子区域、落点却按完整选区算，整片文字系统性偏移。界内时二者恒等，无行为变化。
+    const { bounds } = display
+    const effective: Rect = {
+      x: roi.x * bounds.width,
+      y: roi.y * bounds.height,
+      width: roi.width * bounds.width,
+      height: roi.height * bounds.height,
+    }
     const { observations } = await deps.recognize(dataUrlToBytes(frame.dataUrl), roi)
     return readingOrder(observations).map((observation) => ({
       text: observation.text,
       confidence: observation.confidence,
       box: {
-        x: region.x + observation.boundingBox.x * region.width,
-        y: region.y + observation.boundingBox.y * region.height,
-        width: observation.boundingBox.width * region.width,
-        height: observation.boundingBox.height * region.height,
+        x: effective.x + observation.boundingBox.x * effective.width,
+        y: effective.y + observation.boundingBox.y * effective.height,
+        width: observation.boundingBox.width * effective.width,
+        height: observation.boundingBox.height * effective.height,
       },
     }))
   }
