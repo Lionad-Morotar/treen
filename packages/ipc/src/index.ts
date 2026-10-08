@@ -22,6 +22,16 @@ export const RENDER_SITE_ROUTES = {
   health: '/api/health',
 } as const
 
+/**
+ * 渲染站监听的地址与端口。只绑回环：服务仅供电桌壳层调用，暴露到 LAN 会把本机变成公开渲染端点。
+ * 端口固定是为了让壳层能写死基准 URL 而无需运行时发现。
+ */
+export const RENDER_SITE_HOST = '127.0.0.1'
+export const RENDER_SITE_PORT = 5433
+
+/** 渲染站基准 URL：壳层据此拼出 `RENDER_SITE_ROUTES` 里的端点，服务端据此绑定监听地址。 */
+export const RENDER_SITE_ORIGIN = `http://${RENDER_SITE_HOST}:${RENDER_SITE_PORT}`
+
 export interface SharedConfigProbe {
   configured: boolean
   redactedKey: string | null
