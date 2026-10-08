@@ -135,4 +135,32 @@ describe('createOcrReader', () => {
     // 钳制后 ROI 宽 300（0–0.75×400）：0.5 落在 150，而不是未钳制的 −100 + 0.5×400 = 100。
     expect(blocks[0]?.box).toEqual({ x: 150, y: 100, width: 30, height: 20 })
   })
+
+  it('右越界同样按钳制矩形换算，落点不越过屏右缘', async () => {
+    const recognize = vi.fn(async () => ({
+      observations: [obs('x', { x: 0.8, y: 0.5, width: 0.2, height: 0.1 })],
+    }))
+    const reader = createOcrReader({ recognize })
+
+    // 选区右端越出 100 DIP：ROI 宽钳成 100（0.75–1.0），映射便不再按未钳制的 200 展开。
+    const blocks = await reader(frame(), { x: 300, y: 0, width: 200, height: 200 }, display)
+
+    const box = blocks[0]?.box
+    expect(box).toEqual({ x: 380, y: 100, width: 20, height: 20 })
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(400)
+  })
+
+  it('下越界同样按钳制矩形换算，落点不越过屏下缘', async () => {
+    const recognize = vi.fn(async () => ({
+      observations: [obs('x', { x: 0.5, y: 0.9, width: 0.1, height: 0.1 })],
+    }))
+    const reader = createOcrReader({ recognize })
+
+    // 选区下端越出 100 DIP：ROI 高钳成 100（0.5–1.0），同一 bbox 的落点随之收窄到屏下缘内。
+    const blocks = await reader(frame(), { x: 0, y: 100, width: 400, height: 200 }, display)
+
+    const box = blocks[0]?.box
+    expect(box).toEqual({ x: 200, y: 190, width: 40, height: 10 })
+    expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(200)
+  })
 })
