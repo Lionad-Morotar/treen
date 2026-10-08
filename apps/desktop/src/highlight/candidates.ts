@@ -113,6 +113,9 @@ export function edgeCandidates(
   frameSize: Size,
   borders: readonly BorderRect[],
 ): Candidate[] {
+  // 与 geometry.frameScaleOf 是同一个比值的两个方向：这里要「DIP / 像素」，直接除出来即可。
+  // 写成它的倒数（1 / frameScaleOf(...)）会让 1.5 这类比值损失精度，实测 2880×1620 的帧
+  // 换算出的 1920 会变成 1919.9999999999998，坐标断言随即崩掉。
   const scaleX = frameSize.width > 0 ? display.bounds.width / frameSize.width : 0
   const scaleY = frameSize.height > 0 ? display.bounds.height / frameSize.height : 0
   if (scaleX <= 0 || scaleY <= 0) {

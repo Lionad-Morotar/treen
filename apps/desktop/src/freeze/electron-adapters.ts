@@ -1,10 +1,11 @@
 import { BrowserWindow, desktopCapturer, globalShortcut, screen } from 'electron'
-import type { Point, Size } from './geometry'
+import type { Point, Rect, Size } from './geometry'
 import type {
   FreezeFrame,
   FreezeLogger,
   FreezeWindowFactory,
   OverlayWindowHandle,
+  SelectionSource,
 } from './controller'
 import type { ShortcutRegistrar } from './shortcuts'
 import { freezeWindowOptions } from './window-options'
@@ -68,6 +69,32 @@ export async function captureFrames(thumbnailSize: Size): Promise<FreezeFrame[]>
         dataUrl: source.thumbnail.toDataURL(),
       }
     })
+}
+
+/** 判断值是不是一个几何矩形；读取面是跨进程边界，拿到的东西先验形状再用。 */
+function isRect(value: unknown): value is Rect {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+  const candidate = value as Record<string, unknown>
+  return (['x', 'y', 'width', 'height'] as const).every((key) => Number.isFinite(candidate[key]))
+}
+
+/**
+ * 从覆盖窗渲染层读回当前锁定的选区（显示器相对 DIP）。
+ *
+ * 未锁定与页面尚未就绪都返回 null，两者的处置相同（按没有锁定处理），区分只会给调用方
+ * 多一个无从判断的分支。查询本身失败（页面崩了、注入原语被移除）不吞：那是覆盖层出了故障，
+ * 静默按「没有锁定」处理会把它变成一次莫名其妙的整屏拷贝。
+ */
+export async function readLockedRegion(window: BrowserWindow): Promise<Rect | null> {
+  if (window.isDestroyed()) {
+    return null
+  }
+  const value: unknown = await window.webContents.executeJavaScript(
+    'typeof window.__treenGetLocked === "function" ? window.__treenGetLocked() : null',
+  )
+  return isRect(value) ? value : null
 }
 
 /**
@@ -149,6 +176,11 @@ export function createOverlayWindowFactory(
           }
           pendingCandidates = candidates
           injectCandidates()
+        },
+        readSelection: async (): Promise<SelectionSource | null> => {
+          const locked = await readLockedRegion(window)
+          // 等渲染层答复期间窗口可能已被拆掉（用户按了 Escape），此时这一屏已无意义。
+          return window.isDestroyed() ? null : { display, frame, locked }
         },
         focus: () => {
           if (window.isDestroyed()) {

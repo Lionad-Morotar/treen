@@ -3,6 +3,7 @@ import {
   createFreezeController,
   type FreezeFrame,
   type OverlayWindowHandle,
+  type SelectionSource,
 } from '../src/freeze/controller'
 import { ShortcutManager, type ShortcutRegistrar } from '../src/freeze/shortcuts'
 import type { DisplayLike } from '../src/freeze/geometry'
@@ -20,6 +21,7 @@ const secondary: DisplayLike = {
 }
 const TRIGGER = 'CommandOrControl+Shift+X'
 const ESCAPE = 'Escape'
+const COPY = 'CommandOrControl+C'
 
 function fakeShortcuts(accept: (accelerator: string) => boolean = () => true) {
   const handlers = new Map<string, () => void>()
@@ -62,6 +64,11 @@ function fakeWindows(failOnDisplayId?: number) {
         }),
         isDestroyed: () => destroyed.has(id),
         setCandidates: vi.fn(),
+        readSelection: async (): Promise<SelectionSource> => ({
+          display,
+          frame,
+          locked: null,
+        }),
       }
       records.push({ handle, display, frame })
       return handle
@@ -87,6 +94,7 @@ interface HarnessOptions {
   acceptAccelerator?: (accelerator: string) => boolean
   capture?: () => Promise<FreezeFrame[]>
   buildCandidates?: (display: DisplayLike, frame: FreezeFrame) => Promise<readonly Candidate[]>
+  copySelection?: () => unknown
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -105,6 +113,8 @@ function createHarness(options: HarnessOptions = {}) {
     shortcuts: shortcuts.manager,
     triggerAccelerator: TRIGGER,
     exitAccelerator: ESCAPE,
+    copyAccelerator: COPY,
+    copySelection: options.copySelection,
     pointOfInterest: () => options.pointer ?? { x: 10, y: 10 },
     buildCandidates: options.buildCandidates,
     reportError,
@@ -124,6 +134,57 @@ describe('freeze controller: start', () => {
 
     await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
     expect(harness.windows.records).toHaveLength(2)
+  })
+})
+
+describe('freeze controller: 重复触发热键', () => {
+  async function frozenHarness() {
+    const harness = createHarness()
+    harness.controller.start()
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
+    return harness
+  }
+
+  it('再按一次触发热键就退出冻结，与 Escape 同义', async () => {
+    const harness = await frozenHarness()
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    expect(harness.controller.isFrozen()).toBe(false)
+    expect(harness.windows.records.every((r) => r.handle.isDestroyed())).toBe(true)
+    expect(harness.shortcuts.handlers.has(ESCAPE)).toBe(false)
+  })
+
+  it('退出不重新截屏，热键是开关而不是重新进入', async () => {
+    const harness = await frozenHarness()
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    expect(harness.captureFrames).toHaveBeenCalledTimes(1)
+    expect(harness.windows.records).toHaveLength(2)
+  })
+
+  it('退出后可以再次进入', async () => {
+    const harness = await frozenHarness()
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
+    expect(harness.captureFrames).toHaveBeenCalledTimes(2)
+  })
+
+  it('重复触发退出时一并释放拷贝键', async () => {
+    const harness = createHarness({ copySelection: vi.fn() })
+    harness.controller.start()
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+    await vi.waitFor(() => expect(harness.shortcuts.handlers.has(COPY)).toBe(true))
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    expect(harness.shortcuts.handlers.size).toBe(1)
+    expect(harness.shortcuts.handlers.has(TRIGGER)).toBe(true)
   })
 })
 
@@ -357,6 +418,92 @@ describe('freeze controller: 候选区域注入', () => {
     expect(
       harness.windows.records.every((r) => vi.mocked(r.handle.setCandidates).mock.calls.length === 0),
     ).toBe(true)
+  })
+})
+
+describe('freeze controller: 冻结期拷贝键', () => {
+  it('冻结期间注册拷贝键，退出时释放', async () => {
+    const harness = createHarness({ copySelection: vi.fn() })
+
+    await harness.controller.enter()
+    expect(harness.shortcuts.handlers.has(COPY)).toBe(true)
+
+    harness.controller.exit()
+
+    expect(harness.shortcuts.handlers.has(COPY)).toBe(false)
+  })
+
+  it('缺省不给拷贝键，冻结仍然成立', async () => {
+    const harness = createHarness()
+
+    await harness.controller.enter()
+
+    expect(harness.shortcuts.handlers.has(COPY)).toBe(false)
+    expect(harness.controller.isFrozen()).toBe(true)
+  })
+
+  it('拷贝键注册失败只记日志，不进冻结失败路径', async () => {
+    const harness = createHarness({
+      copySelection: vi.fn(),
+      acceptAccelerator: (accelerator) => accelerator !== COPY,
+    })
+
+    await harness.controller.enter()
+
+    expect(harness.controller.isFrozen()).toBe(true)
+    expect(harness.shortcuts.handlers.has(ESCAPE)).toBe(true)
+    expect(harness.warn.mock.calls.some(([message]) => String(message).includes(COPY))).toBe(true)
+  })
+
+  it('按拷贝键把动作交给注入的拷贝实现', async () => {
+    const copySelection = vi.fn()
+    const harness = createHarness({ copySelection })
+
+    await harness.controller.enter()
+    harness.shortcuts.handlers.get(COPY)?.()
+
+    await vi.waitFor(() => expect(copySelection).toHaveBeenCalledTimes(1))
+  })
+
+  it('拷贝实现异步失败时收进日志，不产生未处理拒绝', async () => {
+    const harness = createHarness({
+      copySelection: async () => {
+        throw new Error('剪贴板写入失败')
+      },
+    })
+
+    await harness.controller.enter()
+    harness.shortcuts.handlers.get(COPY)?.()
+
+    await vi.waitFor(() =>
+      expect(harness.warn.mock.calls.some(([message]) => String(message).includes('剪贴板写入失败'))).toBe(
+        true,
+      ),
+    )
+  })
+
+  it('拷贝实现同步抛错时同样只落日志', async () => {
+    const harness = createHarness({
+      copySelection: () => {
+        throw new Error('同步炸了')
+      },
+    })
+
+    await harness.controller.enter()
+    harness.shortcuts.handlers.get(COPY)?.()
+
+    await vi.waitFor(() =>
+      expect(harness.warn.mock.calls.some(([message]) => String(message).includes('同步炸了'))).toBe(true),
+    )
+    expect(harness.controller.isFrozen()).toBe(true)
+  })
+
+  it('冻结失败时不留下拷贝键', async () => {
+    const harness = createHarness({ copySelection: vi.fn(), failOnDisplayId: 2 })
+
+    await expect(harness.controller.enter()).rejects.toThrow(/建窗失败/)
+
+    expect(harness.shortcuts.handlers.has(COPY)).toBe(false)
   })
 })
 

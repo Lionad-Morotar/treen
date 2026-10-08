@@ -15,6 +15,8 @@ import {
   pointOfInterest,
 } from './freeze/electron-adapters'
 import { createCandidateBuilder } from './highlight/electron-candidates'
+import { createSelectionCopier } from './selection'
+import { frameCropWriter } from './selection/electron-clipboard'
 import { describeStartup } from './startup'
 
 const logger = createLogger('desktop')
@@ -32,6 +34,18 @@ function createMainWindow(): BrowserWindow {
  * overlay.html 从 app 根取（`electron .` 下即包目录），不随构建产物走——它不进 main.js 的打包面。
  */
 function setupFreeze(): void {
+  const copySelection = createSelectionCopier({
+    // 覆盖窗列表由控制器持有，且要到拷贝真发生的那一刻才是最新的，故按需现取。
+    readSources: async () => {
+      const handles = freeze?.windows() ?? []
+      const sources = await Promise.all(handles.map((handle) => handle.readSelection()))
+      return sources.filter((source) => source !== null)
+    },
+    writeCrop: frameCropWriter(logger),
+    pointer: pointOfInterest,
+    logger,
+  })
+
   const controller = createFreezeController({
     listDisplays,
     captureFrames,
@@ -39,6 +53,7 @@ function setupFreeze(): void {
     shortcuts: new ShortcutManager(electronShortcutRegistrar()),
     pointOfInterest,
     buildCandidates: createCandidateBuilder({ logger }),
+    copySelection,
     // 进入冻结失败（最常见的首跑原因是未授予屏幕录制权限）必须让用户看见，否则表现成「按了没反应」。
     reportError: (message) => {
       void dialog.showMessageBox({

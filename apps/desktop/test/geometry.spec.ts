@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   captureThumbnailSize,
+  dipRectToFrameRect,
   displayContainingPoint,
+  frameScaleOf,
   matchSourcesToDisplays,
   physicalPixelSize,
   toWindowPoint,
@@ -124,5 +126,93 @@ describe('matchSourcesToDisplays', () => {
   it('preserves display order in the match list regardless of source order', () => {
     const plan = matchSourcesToDisplays([source('3'), source('1')], [primary, secondary])
     expect(plan.matches.map((m) => m.display.id)).toEqual([1, 3])
+  })
+})
+
+describe('frameScaleOf', () => {
+  it('derive the bitmap-to-DIP ratio from the actual sizes', () => {
+    // 2x 屏：位图是 DIP 的两倍，比值即 2，不靠 scaleFactor 推。
+    expect(frameScaleOf(primary, { width: 2880, height: 1800 })).toEqual({ width: 2, height: 2 })
+  })
+
+  it('stay at 1 when the frame was downscaled into a shared thumbnail bound', () => {
+    // thumbnailSize 对所有屏是同一个上界，较小的屏会被缩到与 DIP 同量级，此时比值才是 1。
+    expect(frameScaleOf(primary, { width: 1440, height: 900 })).toEqual({ width: 1, height: 1 })
+  })
+
+  it('report zero ratios for a degenerate frame size instead of dividing by zero', () => {
+    expect(frameScaleOf(primary, { width: 0, height: 0 })).toEqual({ width: 0, height: 0 })
+  })
+
+  it('carry the axes independently', () => {
+    expect(frameScaleOf(primary, { width: 2880, height: 900 })).toEqual({ width: 2, height: 1 })
+  })
+})
+
+describe('dipRectToFrameRect', () => {
+  const frame = { width: 2880, height: 1800 }
+
+  it('scale a display-relative DIP rect into frame pixels', () => {
+    expect(dipRectToFrameRect({ x: 10, y: 20, width: 100, height: 50 }, primary, frame)).toEqual({
+      x: 20,
+      y: 40,
+      width: 200,
+      height: 100,
+    })
+  })
+
+  it('keep the crop at native pixels on a HiDPI display so nothing is written at half resolution', () => {
+    const rect = { x: 0, y: 0, width: 200, height: 150 }
+
+    const cropped = dipRectToFrameRect(rect, primary, frame)
+
+    expect(cropped?.width).toBe(rect.width * primary.scaleFactor)
+    expect(cropped?.height).toBe(rect.height * primary.scaleFactor)
+  })
+
+  it('clip a rect that hangs over the frame edge instead of sampling outside it', () => {
+    expect(dipRectToFrameRect({ x: 1400, y: 850, width: 400, height: 200 }, primary, frame)).toEqual({
+      x: 2800,
+      y: 1700,
+      width: 80,
+      height: 100,
+    })
+  })
+
+  it('clip negative origins to the frame', () => {
+    expect(dipRectToFrameRect({ x: -10, y: -10, width: 20, height: 20 }, primary, frame)).toEqual({
+      x: 0,
+      y: 0,
+      width: 20,
+      height: 20,
+    })
+  })
+
+  it('return null rather than an empty crop when the rect lies outside the frame', () => {
+    expect(dipRectToFrameRect({ x: 2000, y: 0, width: 100, height: 100 }, primary, frame)).toBeNull()
+    expect(dipRectToFrameRect({ x: 0, y: 0, width: 100, height: 100 }, primary, { width: 0, height: 0 })).toBeNull()
+  })
+
+  it('round to whole pixels so the crop never straddles a pixel boundary', () => {
+    const fractional: DisplayLike = {
+      id: 7,
+      scaleFactor: 2,
+      bounds: { x: 0, y: 0, width: 1000, height: 700 },
+    }
+
+    expect(dipRectToFrameRect({ x: 1, y: 1, width: 10, height: 10 }, fractional, { width: 1001, height: 701 })).toEqual({
+      x: 1,
+      y: 1,
+      width: 10,
+      height: 10,
+    })
+  })
+
+  it('reject a rect carrying NaN instead of letting it slip through every arithmetic guard', () => {
+    // NaN 与任何数的比较都是 false，连「面积非正即拒绝」都拦不住，最后一路交给裁剪 API。
+    expect(dipRectToFrameRect({ x: NaN, y: 10, width: 100, height: 50 }, primary, frame)).toBeNull()
+    expect(dipRectToFrameRect({ x: 10, y: NaN, width: 100, height: 50 }, primary, frame)).toBeNull()
+    expect(dipRectToFrameRect({ x: 10, y: 10, width: NaN, height: 50 }, primary, frame)).toBeNull()
+    expect(dipRectToFrameRect({ x: 10, y: 10, width: 100, height: NaN }, primary, frame)).toBeNull()
   })
 })
