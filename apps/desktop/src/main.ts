@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { BrowserWindow, app } from 'electron'
+import { BrowserWindow, app, dialog } from 'electron'
 import { createLogger } from '@treen/shared'
 import {
   DEFAULT_FREEZE_ACCELERATOR,
@@ -34,9 +34,17 @@ function setupFreeze(): void {
   const controller = createFreezeController({
     listDisplays,
     captureFrames,
-    windows: createOverlayWindowFactory(join(app.getAppPath(), 'overlay.html')),
+    windows: createOverlayWindowFactory(join(app.getAppPath(), 'overlay.html'), logger),
     shortcuts: new ShortcutManager(electronShortcutRegistrar()),
     pointOfInterest,
+    // 进入冻结失败（最常见的首跑原因是未授予屏幕录制权限）必须让用户看见，否则表现成「按了没反应」。
+    reportError: (message) => {
+      void dialog.showMessageBox({
+        type: 'error',
+        message: 'Treen 无法进入冻结态',
+        detail: message,
+      })
+    },
     logger,
   })
   if (controller.start()) {

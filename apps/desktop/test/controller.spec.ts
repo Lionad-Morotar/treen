@@ -20,11 +20,11 @@ const secondary: DisplayLike = {
 const TRIGGER = 'CommandOrControl+Shift+X'
 const ESCAPE = 'Escape'
 
-function fakeShortcuts() {
+function fakeShortcuts(accept: (accelerator: string) => boolean = () => true) {
   const handlers = new Map<string, () => void>()
   const registrar: ShortcutRegistrar = {
     register: (accelerator, handler) => {
-      if (handlers.has(accelerator)) {
+      if (!accept(accelerator) || handlers.has(accelerator)) {
         return false
       }
       handlers.set(accelerator, handler)
@@ -82,15 +82,19 @@ interface HarnessOptions {
   frames?: FreezeFrame[]
   pointer?: { x: number; y: number }
   failOnDisplayId?: number
+  acceptAccelerator?: (accelerator: string) => boolean
+  capture?: () => Promise<FreezeFrame[]>
 }
 
 function createHarness(options: HarnessOptions = {}) {
   const displays = options.displays ?? [primary, secondary]
-  const shortcuts = fakeShortcuts()
+  const shortcuts = fakeShortcuts(options.acceptAccelerator)
   const windows = fakeWindows(options.failOnDisplayId)
-  const captureFrames = vi.fn(async () => options.frames ?? displays.map(frameFor))
+  const captureFrames = vi.fn(options.capture ?? (async () => options.frames ?? displays.map(frameFor)))
   const warn = vi.fn()
   const info = vi.fn()
+  const error = vi.fn()
+  const reportError = vi.fn()
   const controller = createFreezeController({
     listDisplays: () => displays,
     captureFrames,
@@ -99,9 +103,10 @@ function createHarness(options: HarnessOptions = {}) {
     triggerAccelerator: TRIGGER,
     exitAccelerator: ESCAPE,
     pointOfInterest: () => options.pointer ?? { x: 10, y: 10 },
-    logger: { warn, info },
+    reportError,
+    logger: { warn, info, error },
   })
-  return { controller, shortcuts, windows, captureFrames, warn, displays }
+  return { controller, shortcuts, windows, captureFrames, warn, info, error, reportError, displays }
 }
 
 describe('freeze controller: start', () => {
@@ -206,6 +211,74 @@ describe('freeze controller: exit', () => {
     const harness = createHarness()
 
     expect(() => harness.controller.exit()).not.toThrow()
+    expect(harness.controller.isFrozen()).toBe(false)
+  })
+})
+
+describe('freeze controller: 失败与中断路径', () => {
+  it('refuses to freeze when the exit accelerator cannot be registered', async () => {
+    const harness = createHarness({ acceptAccelerator: (accelerator) => accelerator !== ESCAPE })
+
+    await expect(harness.controller.enter()).rejects.toThrow(/退出键/)
+    expect(harness.windows.records).toEqual([])
+    expect(harness.controller.isFrozen()).toBe(false)
+    expect(harness.shortcuts.handlers.size).toBe(0)
+  })
+
+  it('surfaces capture failures to the user instead of failing silently', async () => {
+    const harness = createHarness({
+      capture: async () => {
+        throw new Error('截屏失败：未授予屏幕录制权限')
+      },
+    })
+
+    await expect(harness.controller.enter()).rejects.toThrow(/屏幕录制权限/)
+    expect(harness.reportError).toHaveBeenCalledWith('截屏失败：未授予屏幕录制权限')
+    expect(harness.error).toHaveBeenCalled()
+    expect(harness.windows.records).toEqual([])
+    expect(harness.shortcuts.handlers.has(ESCAPE)).toBe(false)
+  })
+
+  it('reports failures raised through the trigger hotkey without an unhandled rejection', async () => {
+    const harness = createHarness({
+      capture: async () => {
+        throw new Error('截屏失败：无法枚举屏幕源')
+      },
+    })
+    harness.controller.start()
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    await vi.waitFor(() => expect(harness.reportError).toHaveBeenCalledTimes(1))
+    expect(harness.controller.isFrozen()).toBe(false)
+  })
+
+  it('abandons an in-flight freeze when disposed, leaving no overlay or shortcut behind', async () => {
+    let releaseCapture: (frames: FreezeFrame[]) => void = () => {}
+    const harness = createHarness({
+      capture: () =>
+        new Promise<FreezeFrame[]>((resolve) => {
+          releaseCapture = resolve
+        }),
+    })
+
+    const pending = harness.controller.enter()
+    harness.controller.dispose()
+    releaseCapture([frameFor(primary), frameFor(secondary)])
+    await pending
+
+    expect(harness.windows.records).toEqual([])
+    expect(harness.controller.isFrozen()).toBe(false)
+    expect(harness.shortcuts.handlers.size).toBe(0)
+  })
+
+  it('ignores enter after dispose', async () => {
+    const harness = createHarness()
+    harness.controller.dispose()
+
+    await harness.controller.enter()
+
+    expect(harness.captureFrames).not.toHaveBeenCalled()
     expect(harness.controller.isFrozen()).toBe(false)
   })
 })

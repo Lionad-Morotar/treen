@@ -17,7 +17,9 @@ import type { ShortcutManager } from './shortcuts'
  * 运转，因而可在 Node 下被单测覆盖。真实 Electron 绑定在适配层提供。
  *
  * 生命周期不变量：任何失败路径都不得留下置顶透明窗或残留的全局快捷键——否则冻结窗会变成
- * 一块吞掉全屏点击的隐形层，用户无法自行恢复。
+ * 一块吞掉全屏点击的隐形层，用户无法自行恢复。由此派生两条硬约束：
+ * - 退出键注册失败即放弃进入冻结，绝不出现「有遮罩、无出口」的组合；
+ * - 进入流程的失败要让用户看得见（经 reportError），不能静默无反应。
  */
 
 /** 截屏帧：在通用源投影之上带渲染层可用的位图数据。 */
@@ -42,6 +44,7 @@ export interface FreezeWindowFactory {
 export interface FreezeLogger {
   info(message: string): void
   warn(message: string): void
+  error(message: string): void
 }
 
 export interface FreezeControllerDeps {
@@ -57,6 +60,8 @@ export interface FreezeControllerDeps {
   exitAccelerator?: string
   /** 决定进入冻结时聚焦哪块屏（通常取光标所在屏）；缺省聚焦第一块可用屏 */
   pointOfInterest?: () => Point
+  /** 把「用户触发但失败」的原因交给壳层呈现（对话框等）；纯 Logic 侧不决定呈现方式 */
+  reportError?(message: string): void
   logger?: FreezeLogger
 }
 
@@ -65,7 +70,7 @@ export interface FreezeController {
   start(): boolean
   enter(): Promise<void>
   exit(): void
-  /** 应用退出前调用：注销全部快捷键并拆掉覆盖层 */
+  /** 应用退出前调用：注销全部快捷键并拆掉覆盖层；此后 enter 不再生效 */
   dispose(): void
   isFrozen(): boolean
   windows(): readonly OverlayWindowHandle[]
@@ -78,19 +83,41 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
   let created: OverlayWindowHandle[] = []
   let frozen = false
   let entering: Promise<void> | null = null
+  let disposed = false
 
-  async function doEnter(): Promise<void> {
+  function exit(): void {
+    if (!frozen) {
+      return
+    }
+    deps.shortcuts.unregister(exitAccelerator)
+    closeAll(created)
+    created = []
+    frozen = false
+  }
+
+  async function runEnter(): Promise<void> {
     const displays = deps.listDisplays()
     if (displays.length === 0) {
       throw new Error('无法进入冻结态：未检测到任何显示器')
     }
 
-    deps.shortcuts.register(exitAccelerator, () => exit())
+    // 退出键是冻结态唯一的常规出口，注册不上就不进冻结：宁可什么都不做，也不留下无出口的遮罩。
+    const exitRegistered = deps.shortcuts.register(exitAccelerator, () => exit())
+    if (!exitRegistered) {
+      throw new Error(`无法进入冻结态：退出键 ${exitAccelerator} 注册失败`)
+    }
 
     const opened: OverlayWindowHandle[] = []
     try {
       const thumbnailSize = captureThumbnailSize(displays)
       const frames = await deps.captureFrames(thumbnailSize)
+
+      // 截屏在途期间可能已经 dispose（应用退出）或 exit；此时不能再建窗，直接收尾退出键。
+      if (disposed) {
+        deps.shortcuts.unregister(exitAccelerator)
+        return
+      }
+
       const plan = matchSourcesToDisplays(frames, displays)
       if (plan.missingDisplays.length > 0) {
         const ids = plan.missingDisplays.map((display) => display.id).join(', ')
@@ -107,20 +134,34 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       deps.logger?.info(`已进入冻结态，覆盖 ${opened.length} 块显示器`)
       focusWindowFor(displays, opened)
     } catch (error) {
-      for (const window of opened) {
-        if (!window.isDestroyed()) {
-          window.close()
-        }
-      }
+      closeAll(opened)
       deps.shortcuts.unregister(exitAccelerator)
       throw error
     }
   }
 
+  async function doEnter(): Promise<void> {
+    try {
+      await runEnter()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      deps.logger?.error(message)
+      deps.reportError?.(message)
+      throw error
+    }
+  }
+
+  function closeAll(windows: OverlayWindowHandle[]): void {
+    for (const window of windows) {
+      if (!window.isDestroyed()) {
+        window.close()
+      }
+    }
+  }
+
   function focusWindowFor(displays: DisplayLike[], opened: OverlayWindowHandle[]): void {
     const point = deps.pointOfInterest?.()
-    const target =
-      point === undefined ? undefined : displayContainingPoint(displays, point)
+    const target = point === undefined ? undefined : displayContainingPoint(displays, point)
     const window =
       target === undefined
         ? opened[0]
@@ -129,7 +170,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
   }
 
   function enter(): Promise<void> {
-    if (frozen) {
+    if (disposed || frozen) {
       return Promise.resolve()
     }
     if (entering !== null) {
@@ -141,27 +182,15 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     return entering
   }
 
-  function exit(): void {
-    if (!frozen) {
-      return
-    }
-    deps.shortcuts.unregister(exitAccelerator)
-    for (const window of created) {
-      if (!window.isDestroyed()) {
-        window.close()
-      }
-    }
-    created = []
-    frozen = false
-  }
-
   function start(): boolean {
     return deps.shortcuts.register(triggerAccelerator, () => {
-      void enter()
+      // 失败已在 doEnter 内经 reportError 呈现，这里吞掉 rejection 只为避免未处理拒绝告警。
+      void enter().catch(() => {})
     })
   }
 
   function dispose(): void {
+    disposed = true
     exit()
     deps.shortcuts.unregisterAll()
   }

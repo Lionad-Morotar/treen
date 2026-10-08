@@ -1,6 +1,11 @@
 import { BrowserWindow, desktopCapturer, globalShortcut, screen } from 'electron'
 import type { Point, Size } from './geometry'
-import type { FreezeWindowFactory, FreezeFrame, OverlayWindowHandle } from './controller'
+import type {
+  FreezeFrame,
+  FreezeLogger,
+  FreezeWindowFactory,
+  OverlayWindowHandle,
+} from './controller'
 import type { ShortcutRegistrar } from './shortcuts'
 import { freezeWindowOptions } from './window-options'
 
@@ -71,7 +76,10 @@ export async function captureFrames(thumbnailSize: Size): Promise<FreezeFrame[]>
  * 用 showInactive 而非 show 是为了不在「多窗依次完成加载」时发生焦点互抢——真正需要键盘焦点
  * 的那块屏由控制器的 focus() 显式指定，见下。
  */
-export function createOverlayWindowFactory(overlayPath: string): FreezeWindowFactory {
+export function createOverlayWindowFactory(
+  overlayPath: string,
+  logger?: FreezeLogger,
+): FreezeWindowFactory {
   let sequence = 0
   return {
     create(display, frame): OverlayWindowHandle {
@@ -80,6 +88,10 @@ export function createOverlayWindowFactory(overlayPath: string): FreezeWindowFac
       // 覆盖到全屏应用与所有工作区之上，否则别的应用进入全屏时空不出这块屏。
       window.setAlwaysOnTop(true, 'screen-saver')
       window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+      // 帧以 data URL 走一次字符串 IPC，大屏下体积可观，记一行便于观测冻结进入耗时。
+      logger?.info(
+        `覆盖窗 display=${display.id} 帧 ${(frame.dataUrl.length / 1024 / 1024).toFixed(2)}MB`,
+      )
 
       window.webContents.once('did-finish-load', () => {
         if (window.isDestroyed()) {
@@ -87,9 +99,10 @@ export function createOverlayWindowFactory(overlayPath: string): FreezeWindowFac
         }
         void window.webContents
           .executeJavaScript(`window.__treenSetFrame(${JSON.stringify(frame.dataUrl)})`)
-          .catch(() => {
+          .catch((error: unknown) => {
             // 注入失败时仍显示窗口：宁可露出空白覆盖层，也不要留下「快捷键按下却毫无反应」的哑状态，
-            // 用户至少能按 Escape 退出。
+            // 用户至少能按 Escape 退出。失败本身仍要出声，否则这个降级态会一直静默。
+            logger?.warn(`帧注入失败：${error instanceof Error ? error.message : String(error)}`)
           })
           .finally(() => {
             if (!window.isDestroyed()) {
@@ -97,8 +110,11 @@ export function createOverlayWindowFactory(overlayPath: string): FreezeWindowFac
             }
           })
       })
-      void window.loadFile(overlayPath).catch(() => {
-        // 窗口可能在加载途中被 destroy（例如瞬时退出），此时 loadFile 的 rejection 是预期噪音。
+      void window.loadFile(overlayPath).catch((error: unknown) => {
+        // 窗口在加载途中被 destroy（瞬时退出）时 rejection 属预期噪音，只在窗口仍活着时告警。
+        if (!window.isDestroyed()) {
+          logger?.warn(`overlay.html 加载失败：${error instanceof Error ? error.message : String(error)}`)
+        }
       })
 
       return {
