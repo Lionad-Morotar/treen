@@ -22,16 +22,36 @@ function loadCompiler(): Promise<MermaidApi> {
   })
 }
 
+/** 校验器的可注入端口。加载失败默认静默，但会被清出缓存，下一次调用重试。 */
+export interface MermaidValidatorOptions {
+  /** mermaid 加载失败时的回调（默认无操作），供调用方观测「校验整体不可用」这类非语法错。 */
+  onLoadError?: (error: unknown) => void
+}
+
 /**
  * 生成一个 mermaid 校验器。首次调用会把 mermaid 与其 DOM 垫片加载起来（进程内一次），此后复用。
  * 校验失败（语法错、非图文本）一律返回 false，不区分错误类型——命中判定只需知道「能不能解析」。
+ *
+ * 加载失败则**不缓存**：缓存一个 rejected promise 会让一次瞬时故障（垫片竞态、模块解析失败）
+ * 永久钉死校验器，此后所有输入都静默判 false，比不加载更糟。
  */
-export function createMermaidValidator(): MermaidValidator {
+export function createMermaidValidator(options: MermaidValidatorOptions = {}): MermaidValidator {
   let compiler: Promise<MermaidApi> | null = null
+
+  const load = (): Promise<MermaidApi> => {
+    if (compiler === null) {
+      compiler = loadCompiler().catch((error: unknown) => {
+        compiler = null
+        options.onLoadError?.(error)
+        throw error
+      })
+    }
+    return compiler
+  }
 
   return async (source: string): Promise<boolean> => {
     try {
-      const mermaid = await (compiler ??= loadCompiler())
+      const mermaid = await load()
       await mermaid.parse(source)
       return true
     } catch {
