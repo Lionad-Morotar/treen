@@ -1,0 +1,5 @@
+[submodule "refs/esearch"]
+	path = refs/esearch
+	url = https://github.com/xushengfeng/eSearch.git
+	ignore = all
+	shallow = true
