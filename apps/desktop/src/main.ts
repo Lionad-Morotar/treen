@@ -25,7 +25,7 @@ import {
   createTranslateSelection,
   macOcrEngine,
 } from './translation'
-import { composeOverlayPlan } from './overlay'
+import { composeOverlayPlan, createLatestGate } from './overlay'
 import { createRenderSiteClient } from './render-site'
 import { describeStartup } from './startup'
 
@@ -70,9 +70,16 @@ function createRegionLockAction(): ((target: RegionLockTarget) => void) | undefi
     logger,
   })
   const render = createRenderSiteClient()
+  // 覆盖是整批替换，而这条链路（OCR + 外部翻译 + 渲染站）耗时不短：连着点两块区域会让两条
+  // 链路并发，先发起的可能后完成。闸门按发起次序发号，过期结果不落地。
+  const gate = createLatestGate()
 
-  async function translateAndOverlay(target: RegionLockTarget): Promise<void> {
+  async function translateAndOverlay(target: RegionLockTarget, token: number): Promise<void> {
     const outcome = await translate(target.displayId)
+    if (!gate.isCurrent(token)) {
+      logger.info(`显示器 ${target.displayId} 的翻译已被更晚的一次点击取代，丢弃结果`)
+      return
+    }
     if (outcome.kind !== 'translated') {
       logger.info(`点击翻译跳过（${outcome.reason}）：显示器 ${target.displayId}`)
       return
@@ -83,6 +90,10 @@ function createRegionLockAction(): ((target: RegionLockTarget) => void) | undefi
       return
     }
     const plan = await composeOverlayPlan(outcome.blocks, outcome.region, { render, logger })
+    if (!gate.isCurrent(token)) {
+      logger.info(`显示器 ${outcome.displayId} 的覆盖计划已过期，不注入`)
+      return
+    }
     handle.setOverlay(plan)
     logger.info(
       `覆盖已注入：显示器 ${outcome.displayId}，${plan.texts.length} 段译文、${plan.charts.length} 张图`,
@@ -90,7 +101,8 @@ function createRegionLockAction(): ((target: RegionLockTarget) => void) | undefi
   }
 
   return (target) => {
-    void translateAndOverlay(target).catch((error: unknown) => {
+    const token = gate.begin()
+    void translateAndOverlay(target, token).catch((error: unknown) => {
       logger.warn(`覆盖渲染失败：${error instanceof Error ? error.message : String(error)}`)
     })
   }
