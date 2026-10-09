@@ -104,6 +104,34 @@ describe('settings.html 的读写往返', () => {
     expect(bridge.get).toHaveBeenCalled()
   })
 
+  it('图内文案开关：读回的值落到控件、勾选改动写回补丁', async () => {
+    const bridge = {
+      get: vi.fn(async () => ({ translateText: true, translateCharts: true, translateNodeLabels: false })),
+      set: vi.fn(async (patch: unknown) => ({
+        translateText: true,
+        translateCharts: true,
+        translateNodeLabels: true,
+        ...(patch as Record<string, unknown>),
+      })),
+    }
+    const window = load(bridge)
+
+    // 服务端是关：页面初始态未勾选，回填后仍应为关（与加载赛跑用已勾选的其他开关当就绪信号）。
+    const applied = await waitUntil(() => field(window, 'setting-translate-text').checked === true)
+    expect(applied).toBe(true)
+    expect(field(window, 'setting-translate-node-labels').checked).toBe(false)
+
+    field(window, 'setting-translate-node-labels').checked = true
+    dispatchChange(window, 'setting-translate-node-labels')
+
+    const wrote = await waitUntil(() => bridge.set.mock.calls.length > 0)
+    expect(wrote).toBe(true)
+    expect(bridge.set).toHaveBeenCalledWith({ translateNodeLabels: true })
+
+    const saved = await waitUntil(() => field(window, 'settings-status').textContent === '已保存')
+    expect(saved).toBe(true)
+  })
+
   it('勾选即写回补丁，服务端返回的值回填控件并给出已保存提示', async () => {
     const bridge = {
       get: vi.fn(async () => ({ translateText: true, translateCharts: true })),

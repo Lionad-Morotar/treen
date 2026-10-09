@@ -100,7 +100,7 @@ function setupSettings(): SettingsStore {
   })
   const current = store.read()
   logger.info(
-    `设置已就绪：热键 ${current.freezeAccelerator}、翻译文本${current.translateText ? '开' : '关'}、翻译图表${current.translateCharts ? '开' : '关'}`,
+    `设置已就绪：热键 ${current.freezeAccelerator}、翻译文本${current.translateText ? '开' : '关'}、翻译图表${current.translateCharts ? '开' : '关'}、图内文案${current.translateNodeLabels ? '开' : '关'}`,
   )
   return store
 }
@@ -130,22 +130,24 @@ function buildRegionLockAction(
     logger.warn('未配置 DEEPSEEK_KEY，点击翻译不启用；冻结与拷贝不受影响')
     return undefined
   }
-  const translate = createTranslateSelection({
-    readSources: readOverlaySources,
-    recognize: macOcrEngine(),
-    translate: createBatchTranslator({ complete: createDeepSeekCompleter(), logger }),
-    pointer: pointOfInterest,
-    logger,
-  })
+  const translate = createBatchTranslator({ complete: createDeepSeekCompleter(), logger })
   const render = createRenderSiteClient()
 
   return createRegionLockAction({
     readSettings: () => settings.read(),
-    translate,
+    translate: createTranslateSelection({
+      readSources: readOverlaySources,
+      recognize: macOcrEngine(),
+      translate,
+      pointer: pointOfInterest,
+      logger,
+    }),
     compose: (blocks, region, options) =>
       composeOverlayPlan(blocks, region, {
         // 图表开关关闭时不注入渲染方：整段 mermaid 检测与渲染都不发生，而不是渲染完再丢弃。
         render: options.charts ? render : undefined,
+        // 节点文案是图表的子开关：图不渲染时翻译没有落点，一并豁免那次外部调用。
+        translateLabels: options.charts && options.nodeLabels ? translate : undefined,
         texts: options.texts,
         logger,
       }),

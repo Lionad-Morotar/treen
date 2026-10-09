@@ -9,11 +9,14 @@ import type { OverlayPlan } from './layout'
  * 「锁定一块区域就翻译并覆盖回屏幕」的动作装配（纯逻辑）。
  *
  * 链路：读当前设置 → 门控 → OCR +（可选）翻译 → 覆盖计划 → 注入该屏覆盖窗。
- * 两个开关的语义在这里落地：
+ * 开关的语义在这里落地：
  * - `translateText` 关：翻译步骤被跳过（省一次外部调用），OCR 照跑——图仍需源码；
  *   覆盖计划也不再产出译文层，避免空译文盒盖上去。
  * - `translateCharts` 关：覆盖计划不注入渲染方，整段 mermaid 检测与渲染都不发生。
- * 两者正交，全关则一次触发什么都不做（连 OCR 都不发起）。
+ * - `translateNodeLabels` 关：覆盖计划不注入节点文案翻译方，图用识别到的原文渲染。
+ *   它是图表的子开关：只给渲染出来的图换文案，图不渲染时无从生效，故不构成独立动作——
+ *   是否发起整条链路只看 `translateText` 与 `translateCharts`（两者都关则什么都不做，
+ *   连 OCR 都不发起；此时即便图内文案开关还开着，也不让一条没有产出的链去清掉上一次的覆盖）。
  *
  * 设置**每次触发时重新读**：开关与热键都要求改完即生效，缓存会引入一层失效时机的隐式约定。
  * 控制器不感知设置——它只管在锁定跳变时调这个动作，门控全部收在这里，控制器因此保持纯逻辑。
@@ -41,10 +44,12 @@ export interface OverlaySink {
   clearLoading(region: Rect): void
 }
 
-/** 覆盖计划的两个开关，与设置字段同义，收窄成显式的两项以免动作层依赖完整设置形状。 */
+/** 覆盖计划的开关，与设置字段同义，收窄成显式的几项以免动作层依赖完整设置形状。 */
 export interface OverlayPlanOptions {
   texts: boolean
   charts: boolean
+  /** 是否翻译图内节点文案（翻译失败自动回落原文，图不受影响） */
+  nodeLabels: boolean
 }
 
 export interface RegionLockActionDeps {
@@ -99,6 +104,7 @@ export function createRegionLockAction(
       const plan = await deps.compose(outcome.blocks, outcome.region, {
         texts: settings.translateText,
         charts: settings.translateCharts,
+        nodeLabels: settings.translateNodeLabels,
       })
       if (!deps.gate.isCurrent(token)) {
         deps.logger?.info(`显示器 ${outcome.displayId} 的覆盖计划已过期，不注入`)

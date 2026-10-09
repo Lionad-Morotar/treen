@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_TRANSLATE_CHARTS,
+  DEFAULT_TRANSLATE_NODE_LABELS,
   DEFAULT_TRANSLATE_TEXT,
   normalizeSettings,
   readSettings,
@@ -17,6 +18,7 @@ const DEFAULTS: TreenSettings = {
   freezeAccelerator: 'CommandOrControl+Shift+X',
   translateText: true,
   translateCharts: true,
+  translateNodeLabels: true,
 }
 
 /** 以默认值为底，只写本次要断言差异的字段。 */
@@ -45,9 +47,10 @@ afterEach(() => {
 })
 
 describe('默认值与路径', () => {
-  it('两个开关默认都是开', () => {
+  it('三个开关默认都是开', () => {
     expect(DEFAULT_TRANSLATE_TEXT).toBe(true)
     expect(DEFAULT_TRANSLATE_CHARTS).toBe(true)
+    expect(DEFAULT_TRANSLATE_NODE_LABELS).toBe(true)
   })
 
   it('设置文件落在调用方给出的配置目录下，文件名固定', () => {
@@ -106,6 +109,17 @@ describe('readSettings', () => {
   it('单个字段坏掉不牵连另一个字段', () => {
     const file = writeFixture('{"translateText": false, "translateCharts": 3}')
     expect(readSettings({ file, defaults: DEFAULTS })).toEqual(withDefaults({ translateText: false }))
+  })
+
+  it('节点文案开关缺字段或类型不符时按默认开处理', () => {
+    const missing = writeFixture('{"translateText": false}\n')
+    expect(readSettings({ file: missing, defaults: DEFAULTS }).translateNodeLabels).toBe(true)
+
+    const broken = writeFixture('{"translateNodeLabels": "yes"}\n')
+    expect(readSettings({ file: broken, defaults: DEFAULTS }).translateNodeLabels).toBe(true)
+
+    const explicit = writeFixture('{"translateNodeLabels": false}\n')
+    expect(readSettings({ file: explicit, defaults: DEFAULTS }).translateNodeLabels).toBe(false)
   })
 
   it('文件存在却读不出来时抛带路径上下文的错，不静默按默认处理', () => {

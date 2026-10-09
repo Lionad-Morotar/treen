@@ -62,8 +62,15 @@ describe('createSettingsStore', () => {
 
     const saved = store.save({ translateText: 'on', trojan: 1 })
 
-    expect(saved).toEqual(expect.objectContaining({ translateText: true, translateCharts: true }))
-    expect(Object.keys(saved).sort()).toEqual(['freezeAccelerator', 'translateCharts', 'translateText'])
+    expect(saved).toEqual(
+      expect.objectContaining({ translateText: true, translateCharts: true, translateNodeLabels: true }),
+    )
+    expect(Object.keys(saved).sort()).toEqual([
+      'freezeAccelerator',
+      'translateCharts',
+      'translateNodeLabels',
+      'translateText',
+    ])
     expect(store.read()).toEqual(saved)
   })
 

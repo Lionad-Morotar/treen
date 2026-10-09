@@ -1,4 +1,5 @@
 import { detectMermaidBlocks, hasStructuralLine, isDiagramDeclaration } from '../mermaid/detect'
+import { collectNodeLabels, mapNodeLabels } from '../mermaid/labels'
 import { normalizeMermaid } from '../mermaid/normalize'
 import type { MermaidRenderResult } from '../render-site/client'
 import { chartRegionMembers, rectOfMembers, type PlacedObservation } from './chart-region'
@@ -20,6 +21,10 @@ import type { Rect } from '../freeze/geometry'
  * 校验即渲染：候选是否「真是一张图」由渲染站裁决（渲染成功才算命中），因此主进程不必再背一份
  * mermaid + jsdom。渲染站不可达或语法非法时该候选被跳过（记日志），译文照常覆盖——一块图消失
  * 不该让整片译文一起失败。
+ *
+ * 图内节点文案的翻译发生在渲染之前：基于归一化后的源码替换节点主标签（只动标签文字，节点 id 与
+ * 边标签不碰），替换后的源码先送渲染站，被拒（翻译内容让源码不合法）或翻译本身失败时退回原文
+ * 版本再试——译文的归宿是「锦上添花」，任何一步不成立图都照常出来。
  */
 
 /** 翻译链路交出的一段译文：source 为识别到的原文，translation 为译文，box 为其屏幕落点。 */
@@ -36,6 +41,12 @@ export interface ComposeOverlayDeps {
    * 也省掉整段 mermaid 检测与网络往返。
    */
   render?(source: string): Promise<MermaidRenderResult>
+  /**
+   * 批量翻译节点主标签，返回与输入等长的译文；失败抛错。
+   * 缺省即不翻译节点文案——「翻译图内文案」开关关闭时不注入，同 render 的取舍；
+   * 源码里没有节点标签时也不会被调用，省下那次外部调用。
+   */
+  translateLabels?(labels: readonly string[]): Promise<string[]>
   /** 是否产出译文覆盖；缺省 true。关闭时仍照常检测图表（图不需要译文，只需源码文本）。 */
   texts?: boolean
   logger?: { warn(message: string): void; info(message: string): void }
@@ -63,6 +74,42 @@ function chartSourceCandidates(lines: readonly string[]): Array<{ source: string
 }
 
 /**
+ * 一张图的「标签 → 译文」对照表；翻译不适用（未注入、无标签、调用失败）时为 null，
+ * 候选照常用原文。标签集合取首个候选（全区域行）——后续候选是它的裁剪子集，
+ * 一张图只需一次外部调用，裁剪候选不必重译。
+ */
+async function chartLabelLookup(
+  sources: readonly string[],
+  translateLabels: ((labels: readonly string[]) => Promise<string[]>) | undefined,
+  logger?: { warn(message: string): void; info(message: string): void },
+): Promise<Map<string, string | null> | null> {
+  if (translateLabels === undefined || sources.length === 0) {
+    return null
+  }
+  try {
+    // 候选按「全区域 → 砍尾」排列，首个是超集。图后紧跟正文时候选里会混入正文行，
+    // 其中的括号文本可能被收进标签集合（白付几个 token），但替换只作用于最终渲染成功的
+    // 候选源码，不会把译文写进产物；消除这笔浪费要改标签提取的范围语义，归后续切片。
+    const labels = collectNodeLabels(sources[0] ?? '')
+    // 一条节点标签都没有（纯连线图）：那次外部调用也省下。
+    if (labels.length === 0) {
+      return null
+    }
+    const translations = await translateLabels(labels)
+    // 等长是注入实现的契约（批量翻译器内部已保证）；违约宁可弃用译文，也不交出与标签错位的图。
+    if (translations.length !== labels.length) {
+      throw new Error(`节点文案译文 ${translations.length} 条与原文 ${labels.length} 条不一致`)
+    }
+    return new Map(labels.map((label, index) => [label, translations[index] ?? null]))
+  } catch (error) {
+    logger?.warn(
+      `节点文案翻译失败，图用原文渲染：${error instanceof Error ? error.message : String(error)}`,
+    )
+    return null
+  }
+}
+
+/**
  * 把选区里的 mermaid 候选逐个变成图表版位。渲染方由调用方给定——它缺席时整个函数不会被调用。
  * 每个候选的取舍（几何求区域、区域裁剪源码、渲染站裁决、两种源码尝试）见文件头的说明。
  */
@@ -71,6 +118,7 @@ async function composeCharts(
   sourceText: string,
   region: Rect,
   render: (source: string) => Promise<MermaidRenderResult>,
+  translateLabels: ((labels: readonly string[]) => Promise<string[]>) | undefined,
   logger?: { warn(message: string): void; info(message: string): void },
 ): Promise<OverlayChartInput[]> {
   const charts: OverlayChartInput[] = []
@@ -95,10 +143,26 @@ async function composeCharts(
       continue
     }
 
+    // 尝试序列：每个候选先试「节点文案已翻译」的版本，渲染站拒了再退回原文版本——
+    // 翻译模型返回的内容可能让源码不合法（括号、引号），图不能因译文而消失。
+    // 全部候选共享一次翻译调用（对照表按首个候选的超集建立）。
+    const candidateSources = chartSourceCandidates(lines)
+    const lookup = await chartLabelLookup(candidateSources.map((attempt) => attempt.source), translateLabels, logger)
+    const attempts: Array<{ source: string; lineCount: number }> = []
+    for (const attempt of candidateSources) {
+      if (lookup !== null) {
+        attempts.push({
+          source: mapNodeLabels(attempt.source, (label) => lookup.get(label) ?? null).output,
+          lineCount: attempt.lineCount,
+        })
+      }
+      attempts.push(attempt)
+    }
+
     let rendered: MermaidRenderResult | null = null
     let failure: unknown = null
     let covered = members
-    for (const attempt of chartSourceCandidates(lines)) {
+    for (const attempt of attempts) {
       try {
         rendered = await render(attempt.source)
         covered = members.slice(0, attempt.lineCount)
@@ -150,7 +214,7 @@ export async function composeOverlayPlan(
   const charts =
     render === undefined
       ? []
-      : await composeCharts(observations, sourceText, region, render, deps.logger)
+      : await composeCharts(observations, sourceText, region, render, deps.translateLabels, deps.logger)
 
   // 关闭文本翻译时 blocks 的 translation 是空串（翻译步骤被跳过以省一次外部调用）；
   // 那种空盒不该落到覆盖层上，故整批不产出译文——图表已独立成层，不受影响。

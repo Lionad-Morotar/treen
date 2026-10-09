@@ -84,6 +84,7 @@ describe('registerSettingsIpc', () => {
       freezeAccelerator: expect.any(String),
       translateText: false,
       translateCharts: true,
+      translateNodeLabels: true,
     })
   })
 
@@ -108,6 +109,7 @@ describe('registerSettingsIpc', () => {
       freezeAccelerator: expect.any(String),
       translateText: true,
       translateCharts: false,
+      translateNodeLabels: true,
     })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('已回滚'))
   })
