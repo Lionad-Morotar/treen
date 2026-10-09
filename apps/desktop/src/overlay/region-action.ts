@@ -33,8 +33,12 @@ export interface OverlaySink {
   setOverlay(plan: OverlayPlan): void
   /** 在该屏锁定区域显示翻译 loading（显示器相对 DIP）；已显示时刷新位置。 */
   setLoading(region: Rect): void
-  /** 隐藏该屏的翻译 loading；未显示时静默。 */
-  clearLoading(): void
+  /**
+   * 收掉该屏「给定区域」的翻译 loading；当前显示的不是这个区域时不动作。
+   * loading 层每屏一份、由最新一次点击拥有：旧链终态只能退役自己那块区域的线，
+   * 否则同屏连点两块时，先完成的旧链会把新链正在扫的线收掉。
+   */
+  clearLoading(region: Rect): void
 }
 
 /** 覆盖计划的两个开关，与设置字段同义，收窄成显式的两项以免动作层依赖完整设置形状。 */
@@ -111,9 +115,11 @@ export function createRegionLockAction(
       )
     } finally {
       // loading 的全部消失时机都收敛在这一个出口：任何离开链路的方式（含抛错与被作废）
-      // 都要把扫描线收掉。窗口已销毁时不必再调——DOM 随窗口一起没了。
+      // 都要退役自己的扫描线。收的是 target.region 而非「当前层上 whatever」——同屏连点时
+      // 先完成的旧链若无条件收线，会把新链正在扫的线收掉；窗口已销毁时不必再调，
+      // DOM 随窗口一起没了。
       if (sink !== undefined && !sink.isDestroyed()) {
-        sink.clearLoading()
+        sink.clearLoading(target.region)
       }
     }
   }

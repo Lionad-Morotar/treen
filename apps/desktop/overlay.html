@@ -387,11 +387,24 @@
       }
 
       /**
-       * 翻译 loading 的显隐：主进程在翻译链路发起时把层摆到锁定区域上，链路终结时送 null。
-       * rect 与锁定区域同真源（轮询读回的锁定几何），过期请求在主进程侧已被代次闸门丢弃，
-       * 这里只负责 faithfully 摆位与显隐；形状不合的 rect 一律当隐藏处理，不残留旧位置。
+       * 翻译 loading 的显隐：主进程在翻译链路发起时把层摆到锁定区域上，链路终结时按区域收线。
+       * 层每屏一份、由最新一次点击拥有——loadingRect 记下层上正显示的区域，收线请求只在
+       * 「层上正是这个区域」时生效：同屏连点两块时，先完成的旧链收不到新链正在扫的线，
+       * 也不至于把新链的线一并带走。形状不合的 rect 一律当隐藏处理，不残留旧位置。
        */
       var loadingLayer = document.getElementById('treen-loading')
+      var loadingRect = null
+
+      function loadingRectEquals(rect) {
+        return (
+          loadingRect !== null &&
+          rect.x === loadingRect.x &&
+          rect.y === loadingRect.y &&
+          rect.width === loadingRect.width &&
+          rect.height === loadingRect.height
+        )
+      }
+
       window.__treenSetLoading = function (rect) {
         var valid =
           rect &&
@@ -400,14 +413,24 @@
           typeof rect.width === 'number' &&
           typeof rect.height === 'number'
         if (!valid) {
+          loadingRect = null
           loadingLayer.hidden = true
           return
         }
+        loadingRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
         loadingLayer.style.left = rect.x + 'px'
         loadingLayer.style.top = rect.y + 'px'
         loadingLayer.style.width = rect.width + 'px'
         loadingLayer.style.height = rect.height + 'px'
         loadingLayer.hidden = false
+      }
+
+      window.__treenClearLoading = function (rect) {
+        if (!loadingRectEquals(rect)) {
+          return
+        }
+        loadingRect = null
+        loadingLayer.hidden = true
       }
 
       /**

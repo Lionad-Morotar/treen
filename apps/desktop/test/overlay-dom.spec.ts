@@ -58,6 +58,7 @@ interface WindowLike {
   getComputedStyle(element: ElementLike): ComputedStyleLike
   __treenSetOverlay(plan: unknown): void
   __treenSetLoading(rect: unknown): void
+  __treenClearLoading(rect: unknown): void
 }
 
 const OVERLAY_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay.html')
@@ -282,17 +283,39 @@ describe('overlay.html 的翻译 loading 层', () => {
     expect(loading.style.height).toBe('100px')
   })
 
-  it('null 收线后隐藏且不残留，重新显示可复用同一层', () => {
+  it('自己的区域收线后隐藏且不残留，重新显示可复用同一层', () => {
     const { loading, window } = loadOverlay()
 
     window.__treenSetLoading(RECT)
-    window.__treenSetLoading(null)
+    window.__treenClearLoading(RECT)
     expect(loading.hidden).toBe(true)
 
     const moved = { x: 0, y: 0, width: 50, height: 60 }
     window.__treenSetLoading(moved)
     expect(loading.hidden).toBe(false)
     expect(loading.style.width).toBe('50px')
+  })
+
+  it('旧区域的收线动不到新区域正在扫的线（同屏连点竞态）', () => {
+    const { loading, window } = loadOverlay()
+
+    window.__treenSetLoading(RECT)
+    const moved = { x: 0, y: 0, width: 50, height: 60 }
+    window.__treenSetLoading(moved)
+
+    window.__treenClearLoading(RECT)
+    expect(loading.hidden).toBe(false)
+    expect(loading.style.width).toBe('50px')
+
+    window.__treenClearLoading(moved)
+    expect(loading.hidden).toBe(true)
+  })
+
+  it('未显示时收线是静默 no-op', () => {
+    const { loading, window } = loadOverlay()
+
+    window.__treenClearLoading(RECT)
+    expect(loading.hidden).toBe(true)
   })
 
   it('形状不合的 rect 一律当隐藏处理，不把坏值写进样式', () => {

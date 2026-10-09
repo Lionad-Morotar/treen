@@ -271,6 +271,7 @@ describe('createRegionLockAction：loading 的生命周期', () => {
 
     expect(setOverlay).toHaveBeenCalledTimes(1)
     expect(clearLoading).toHaveBeenCalledTimes(1)
+    expect(clearLoading).toHaveBeenCalledWith(REGION)
     expect(setLoading).toHaveBeenCalledTimes(1)
   })
 
@@ -294,14 +295,18 @@ describe('createRegionLockAction：loading 的生命周期', () => {
     const outcome: TranslateOutcome = { kind: 'translated', displayId: 7, region: REGION, blocks: BLOCKS }
     pending[0]?.(outcome)
     await settle()
-    // 前一轮在「被取代」检查点离开链路：扫描线收掉，覆盖不注入。
+    // 前一轮在「被取代」检查点离开链路：对自己的区域发起收线、覆盖不注入。
+    // 两轮的 region 相同，逻辑层只能断言「各链收自己的区域」；「旧区域收线动不到
+    // 新区域的线」由渲染层（overlay-dom 的归属判定用例）钉住，两层合起来语义才完整。
     expect(clearLoading).toHaveBeenCalledTimes(1)
+    expect(clearLoading).toHaveBeenCalledWith(REGION)
     expect(setOverlay).not.toHaveBeenCalled()
 
     pending[1]?.(outcome)
     await settle()
     expect(setOverlay).toHaveBeenCalledTimes(1)
     expect(clearLoading).toHaveBeenCalledTimes(2)
+    expect(clearLoading).toHaveBeenCalledWith(REGION)
   })
 
   it('冻结退出（invalidate）后，在途轮离开链路时收线（时机四）', async () => {
@@ -323,6 +328,7 @@ describe('createRegionLockAction：loading 的生命周期', () => {
     await settle()
 
     expect(clearLoading).toHaveBeenCalledTimes(1)
+    expect(clearLoading).toHaveBeenCalledWith(REGION)
     expect(setOverlay).not.toHaveBeenCalled()
   })
 
@@ -337,6 +343,7 @@ describe('createRegionLockAction：loading 的生命周期', () => {
     await settle()
 
     expect(clearLoading).toHaveBeenCalledTimes(1)
+    expect(clearLoading).toHaveBeenCalledWith(REGION)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('OCR 服务不可用'))
   })
 
@@ -350,6 +357,7 @@ describe('createRegionLockAction：loading 的生命周期', () => {
 
     expect(compose).not.toHaveBeenCalled()
     expect(clearLoading).toHaveBeenCalledTimes(1)
+    expect(clearLoading).toHaveBeenCalledWith(REGION)
   })
 
   it('目标屏没有覆盖窗时不显示也不隐藏', async () => {

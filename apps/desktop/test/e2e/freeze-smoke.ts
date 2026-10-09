@@ -501,7 +501,7 @@ async function verifySelectionLock(window: BrowserWindow | null): Promise<void> 
   )
 }
 
-/** loading 层探针：读回层的显隐、几何与扫描线动画（伪元素取 getComputedStyle）。 */
+/** loading 层探针：读回层的显隐、几何、归属区域与扫描线动画（伪元素取 getComputedStyle）。 */
 const LOADING_PROBE = `(() => {
   const layers = [...document.querySelectorAll('[data-testid="freeze-loading"]')]
   const layer = layers[0]
@@ -515,6 +515,7 @@ const LOADING_PROBE = `(() => {
     animationName: layer ? getComputedStyle(layer, '::after').animationName : null,
     animationDuration: layer ? getComputedStyle(layer, '::after').animationDuration : null,
     setterType: typeof window.__treenSetLoading,
+    clearerType: typeof window.__treenClearLoading,
   }
 })()`
 
@@ -528,6 +529,7 @@ interface LoadingSnapshot {
   animationName: string | null
   animationDuration: string | null
   setterType: string
+  clearerType: string
 }
 
 /**
@@ -546,6 +548,7 @@ async function verifyLoadingScan(window: BrowserWindow | null): Promise<void> {
 
   const initial = await snapshot()
   check('渲染层暴露 __treenSetLoading', initial.setterType === 'function', initial.setterType)
+  check('渲染层暴露 __treenClearLoading', initial.clearerType === 'function', initial.clearerType)
   check('loading 层在页面里唯一且初始隐藏', initial.count === 1 && initial.hidden === true, initial)
 
   // 走真实时序：先注入候选并点击锁定，loading 摆到的就是锁定选区本身。
@@ -572,16 +575,29 @@ async function verifyLoadingScan(window: BrowserWindow | null): Promise<void> {
     { animationName: shown.animationName, animationDuration: shown.animationDuration },
   )
 
-  await window.webContents.executeJavaScript('window.__treenSetLoading(null)')
+  // 同屏连点的竞态：层已改摆到外层区域后，旧区域的收线不得动到新区域的线。
+  await window.webContents.executeJavaScript(
+    `window.__treenSetLoading(${JSON.stringify(OUTER)})`,
+  )
+  await window.webContents.executeJavaScript(
+    `window.__treenClearLoading(${JSON.stringify(INNER)})`,
+  )
+  const raced = await snapshot()
+  check('旧区域的收线不动新区域正在扫的线', raced.hidden === false && raced.left === `${OUTER.x}px`, raced)
+
+  await window.webContents.executeJavaScript(
+    `window.__treenClearLoading(${JSON.stringify(OUTER)})`,
+  )
   const cleared = await snapshot()
-  check('送 null 后层回到隐藏，无残留', cleared.count === 1 && cleared.hidden === true, cleared)
+  check('自己的区域收线后层回到隐藏，无残留', cleared.count === 1 && cleared.hidden === true, cleared)
 }
 
 /**
  * 主进程侧的拉取面：真跑一次 executeJavaScript 跨进程读回渲染层锁定的选区。
  * 单测对这个通道是结构性盲区（替身里没有真的渲染层），它只有真链路能证明。
  */
-async function verifyLockedRegionPull(window: BrowserWindow | null): Promise<void> {  if (window === null || window.isDestroyed()) {
+async function verifyLockedRegionPull(window: BrowserWindow | null): Promise<void> {
+  if (window === null || window.isDestroyed()) {
     check('锁定拉取冒烟有可用的覆盖窗', false)
     return
   }

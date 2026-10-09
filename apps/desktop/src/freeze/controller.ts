@@ -66,8 +66,11 @@ export interface OverlayWindowHandle {
   setOverlay(plan: OverlayPlan): void
   /** 在该屏锁定区域显示翻译 loading 扫描线（显示器相对 DIP）；窗口已销毁时实现方须静默忽略。 */
   setLoading(region: Rect): void
-  /** 隐藏该屏的翻译 loading；窗口已销毁时实现方须静默忽略。 */
-  clearLoading(): void
+  /**
+   * 收掉该屏给定区域的翻译 loading；当前显示的不是这个区域时不动作（每屏的 loading 层
+   * 由最新一次点击拥有，旧链终态只能退役自己的线）。窗口已销毁时实现方须静默忽略。
+   */
+  clearLoading(region: Rect): void
   /**
    * 抓取本窗当前渲染结果中的一块（显示器相对 DIP）的 PNG 字节；窗口已失效或抓取不到像素时为 null。
    *

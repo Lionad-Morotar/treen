@@ -187,9 +187,12 @@ export function createOverlayWindowFactory(
         }
         const command = pendingLoading
         pendingLoading = null
-        const payload = command.visible ? JSON.stringify(command.region) : 'null'
+        // 收线带区域：渲染层只在「层上正是这个区域」时隐藏，旧链的收线动不到新链的线。
+        const expression = command.visible
+          ? `window.__treenSetLoading(${JSON.stringify(command.region)})`
+          : `window.__treenClearLoading(${JSON.stringify(command.region)})`
         void window.webContents
-          .executeJavaScript(`window.__treenSetLoading(${payload})`)
+          .executeJavaScript(expression)
           .catch((error: unknown) => {
             logger?.warn(
               `loading 注入失败：${error instanceof Error ? error.message : String(error)}`,
@@ -280,11 +283,11 @@ export function createOverlayWindowFactory(
           pendingLoading = { visible: true, region }
           injectLoading()
         },
-        clearLoading: () => {
+        clearLoading: (region) => {
           if (window.isDestroyed()) {
             return
           }
-          pendingLoading = { visible: false, region: null }
+          pendingLoading = { visible: false, region }
           injectLoading()
         },
         focus: () => {
