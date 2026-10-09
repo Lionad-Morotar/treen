@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { composeOverlayPlan, type OverlayBlock } from '../src/overlay/compose'
 
 const REGION = { x: 0, y: 0, width: 500, height: 300 }
@@ -181,5 +181,101 @@ describe('composeOverlayPlan：译文与图的覆盖计划装配', () => {
     expect(sources).toHaveLength(1)
     expect(plan.charts).toHaveLength(1)
     expect(plan.texts).toHaveLength(0)
+  })
+})
+
+describe('composeOverlayPlan · 图内节点文案翻译', () => {
+  /** 一块带节点标签的图：两个方形标签，供替换断言。 */
+  function labeledScene(): OverlayBlock[] {
+    return [
+      { source: 'graph LR', translation: '图声明', box: { x: 200, y: 100, width: 80, height: 20 } },
+      { source: 'A[流程甲] --> B[流程乙]', translation: '原文行', box: { x: 200, y: 125, width: 200, height: 20 } },
+    ]
+  }
+
+  /** 节点文案翻译替身：记录每次请求的标签，按词典作答。 */
+  function labelTranslator(map: Record<string, string>) {
+    const requested: string[][] = []
+    const translateLabels = async (labels: readonly string[]) => {
+      requested.push([...labels])
+      return labels.map((label) => map[label] ?? label)
+    }
+    return { translateLabels, requested }
+  }
+
+  it('送渲染的是替换后源码，节点 id 不动，图照常落位', async () => {
+    const { render, sources } = renderStub()
+    const { translateLabels, requested } = labelTranslator({ 流程甲: 'Process A', 流程乙: 'Process B' })
+
+    const plan = await composeOverlayPlan(labeledScene(), REGION, { render, translateLabels })
+
+    expect(requested).toEqual([['流程甲', '流程乙']])
+    expect(sources[0]).toBe('graph LR\nA[Process A] --> B[Process B]')
+    expect(plan.charts).toHaveLength(1)
+  })
+
+  it('翻译抛错时图用原文渲染，不消失', async () => {
+    const { render, sources } = renderStub()
+    const warn = vi.fn()
+    const translateLabels = async (): Promise<string[]> => {
+      throw new Error('DeepSeek 不可达')
+    }
+
+    const plan = await composeOverlayPlan(labeledScene(), REGION, { render, translateLabels, logger: { warn, info: vi.fn() } })
+
+    expect(sources[0]).toBe('graph LR\nA[流程甲] --> B[流程乙]')
+    expect(plan.charts).toHaveLength(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('节点文案翻译失败'))
+  })
+
+  it('译文让源码不合法时退回原文版本再试，图仍出来', async () => {
+    // 渲染站只认原文源码：替译文版抛语法错，模拟翻译内容破坏结构。
+    const sources: string[] = []
+    const render = async (source: string) => {
+      sources.push(source)
+      if (source.includes('Process')) {
+        throw new Error('Parse error on line 2')
+      }
+      return { svg: '<svg viewBox="0 0 100 50"></svg>', intrinsic: { width: 100, height: 50 } }
+    }
+    const { translateLabels } = labelTranslator({ 流程甲: 'Process', 流程乙: 'Process B' })
+
+    const plan = await composeOverlayPlan(labeledScene(), REGION, { render, translateLabels })
+
+    // 先试译文版（被渲染站拒了），再试原文版成功。
+    expect(sources).toEqual(['graph LR\nA[Process] --> B[Process B]', 'graph LR\nA[流程甲] --> B[流程乙]'])
+    expect(plan.charts).toHaveLength(1)
+  })
+
+  it('图里没有节点标签时不发起翻译调用', async () => {
+    const { render, sources } = renderStub()
+    const { translateLabels, requested } = labelTranslator({})
+
+    const plan = await composeOverlayPlan(scene(), REGION, { render, translateLabels })
+
+    expect(requested).toHaveLength(0)
+    expect(sources).toHaveLength(1)
+    expect(plan.charts).toHaveLength(1)
+  })
+
+  it('译文条数与标签数不一致时按违约处理，回落原文渲染', async () => {
+    const { render, sources } = renderStub()
+    const warn = vi.fn()
+    const translateLabels = async (labels: readonly string[]) => labels.slice(1)
+
+    const plan = await composeOverlayPlan(labeledScene(), REGION, { render, translateLabels, logger: { warn, info: vi.fn() } })
+
+    expect(sources[0]).toBe('graph LR\nA[流程甲] --> B[流程乙]')
+    expect(plan.charts).toHaveLength(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('不一致'))
+  })
+
+  it('不注入翻译方即维持现状：图用识别到的原文源码渲染', async () => {
+    const { render, sources } = renderStub()
+
+    const plan = await composeOverlayPlan(labeledScene(), REGION, { render })
+
+    expect(sources[0]).toBe('graph LR\nA[流程甲] --> B[流程乙]')
+    expect(plan.charts).toHaveLength(1)
   })
 })
