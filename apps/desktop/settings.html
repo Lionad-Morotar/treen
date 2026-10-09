@@ -122,6 +122,28 @@
         background: var(--treen-accent);
       }
 
+      /* 热键框：只读，键盘事件被捕获成组合键而不是文本输入。 */
+      .treen-row input[type='text'] {
+        width: 210px;
+        padding: 6px 10px;
+        border: 1px solid var(--treen-border);
+        border-radius: 4px;
+        background: rgba(34, 184, 230, 0.08);
+        color: var(--treen-text);
+        font-family: var(--treen-font);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-align: center;
+        cursor: pointer;
+        flex: 0 0 auto;
+      }
+
+      /* 聚焦只换边框色：底态已有等宽边框，切换不产生位移。 */
+      .treen-row input[type='text']:focus {
+        border-color: var(--treen-accent);
+        outline: none;
+      }
+
       footer {
         display: flex;
         align-items: center;
@@ -176,6 +198,25 @@
         </div>
       </section>
 
+      <!-- 冻结区块：触发热键 -->
+      <section data-testid="settings-section-freeze">
+        <h2>冻结</h2>
+        <div class="treen-row">
+          <label class="treen-row-label" for="setting-freeze-accelerator">
+            <strong>冻结热键</strong>
+            <span>点进来直接按组合键，需含 Command / Control / Alt 之一</span>
+          </label>
+          <input
+            id="setting-freeze-accelerator"
+            data-testid="settings-freeze-accelerator"
+            type="text"
+            readonly
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+      </section>
+
       <!-- 保存状态行：读写失败必须可见，否则用户以为改好了 -->
       <footer id="settings-status" data-testid="settings-status" data-kind="idle" role="status"></footer>
     </main>
@@ -188,9 +229,62 @@
         var status = document.getElementById('settings-status')
         var TEXT_FIELD = 'setting-translate-text'
         var CHARTS_FIELD = 'setting-translate-charts'
+        var HOTKEY_FIELD = 'setting-freeze-accelerator'
+
+        // 修饰键本身的 keydown 不构成组合键，按到它们时什么都不做（等真正的那个键）。
+        var MODIFIER_KEYS = { Meta: true, Control: true, Alt: true, Shift: true, AltGraph: true }
+        // 少量 Electron accelerator 与 DOM key 不同名的键，其余按原名直传。
+        var KEY_ALIASES = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', ' ': 'Space' }
+        var FUNCTION_KEY = /^F([1-9]|1[0-9]|2[0-4])$/
+        var WORD_KEY = /^[A-Za-z]+$/
 
         function byId(id) {
           return document.getElementById(id)
+        }
+
+        /** 把 DOM 的 event.key 换成 Electron accelerator 认得的键名；认不出返回 null。 */
+        function keyName(event) {
+          var key = event.key
+          if (typeof key !== 'string' || key === '') {
+            return null
+          }
+          if (key.length === 1) {
+            return key.toUpperCase()
+          }
+          if (Object.prototype.hasOwnProperty.call(KEY_ALIASES, key)) {
+            return KEY_ALIASES[key]
+          }
+          if (FUNCTION_KEY.test(key)) {
+            return key
+          }
+          // Home / End / PageUp 一类单词键名与 accelerator 同名，首字母大写即可。
+          return WORD_KEY.test(key) ? key.charAt(0).toUpperCase() + key.slice(1) : null
+        }
+
+        /**
+         * 由一次按键事件算出 accelerator；不构成合法组合键时返回 null。
+         *
+         * 至少要有 Command/Control/Alt 之一：只带 Shift（甚至什么都不带）的键位一旦注册成全局热键，
+         * 会在所有应用里截走这个键。Escape 也排除，它是冻结态的退出键，绑成触发键会一按即退。
+         */
+        function acceleratorFromEvent(event) {
+          if (MODIFIER_KEYS[event.key] === true) {
+            return null
+          }
+          var name = keyName(event)
+          if (name === null || name === 'Escape') {
+            return null
+          }
+          if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+            return null
+          }
+          var parts = []
+          if (event.metaKey) parts.push('Command')
+          if (event.ctrlKey) parts.push('Control')
+          if (event.altKey) parts.push('Alt')
+          if (event.shiftKey) parts.push('Shift')
+          parts.push(name)
+          return parts.join('+')
         }
 
         function message(error) {
@@ -209,6 +303,9 @@
           }
           byId(TEXT_FIELD).checked = settings.translateText === true
           byId(CHARTS_FIELD).checked = settings.translateCharts === true
+          if (typeof settings.freezeAccelerator === 'string') {
+            byId(HOTKEY_FIELD).value = settings.freezeAccelerator
+          }
         }
 
         function load() {
@@ -258,6 +355,16 @@
           })
           byId(CHARTS_FIELD).addEventListener('change', function (event) {
             save({ translateCharts: event.target.checked })
+          })
+          byId(HOTKEY_FIELD).addEventListener('keydown', function (event) {
+            // 只读框本来不会吞按键，但方向键/空格会滚动页面，故一律拦下。
+            event.preventDefault()
+            var accelerator = acceleratorFromEvent(event)
+            if (accelerator === null) {
+              setStatus('这个组合键不可用：需要至少一个 Command / Control / Alt，且不能用 Escape', 'error')
+              return
+            }
+            save({ freezeAccelerator: accelerator })
           })
           load()
         })

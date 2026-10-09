@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createSettingsStore } from '../src/settings/store'
+import { createSettingsStore, SETTINGS_DEFAULTS } from '../src/settings/store'
+import { DEFAULT_FREEZE_ACCELERATOR } from '../src/freeze/window-options'
 
 const tempDirs: string[] = []
 
@@ -21,18 +22,27 @@ afterEach(() => {
 describe('createSettingsStore', () => {
   it('首次读取返回默认值（目录里还没有设置文件）', () => {
     const store = createSettingsStore({ userDataDir: tempDir() })
-    expect(store.read()).toEqual({ translateText: true, translateCharts: true })
+    expect(store.read()).toEqual(SETTINGS_DEFAULTS)
   })
 
   it('保存后立刻能读回，且落在配置目录下的 settings.json', () => {
     const dir = tempDir()
     const store = createSettingsStore({ userDataDir: dir })
 
-    expect(store.save({ translateText: false })).toEqual({
-      translateText: false,
-      translateCharts: true,
-    })
-    expect(store.read()).toEqual({ translateText: false, translateCharts: true })
+    expect(store.save({ translateText: false })).toEqual(
+      expect.objectContaining({ translateText: false, translateCharts: true }),
+    )
+    expect(store.read()).toEqual(
+      expect.objectContaining({ translateText: false, translateCharts: true }),
+    )
+  })
+
+  it('热键默认取热键注册域的常量，改键后能读回', () => {
+    const store = createSettingsStore({ userDataDir: tempDir() })
+
+    expect(store.read().freezeAccelerator).toBe(DEFAULT_FREEZE_ACCELERATOR)
+    expect(store.save({ freezeAccelerator: 'Alt+T' }).freezeAccelerator).toBe('Alt+T')
+    expect(store.read().freezeAccelerator).toBe('Alt+T')
   })
 
   it('补丁只改指定字段，另一字段沿用磁盘现状而非默认', () => {
@@ -42,7 +52,9 @@ describe('createSettingsStore', () => {
     // 再改文本开关：图表开关应保持关，而不是被悄悄打回默认。
     const after = store.save({ translateText: false })
 
-    expect(after).toEqual({ translateText: false, translateCharts: false })
+    expect(after).toEqual(
+      expect.objectContaining({ translateText: false, translateCharts: false }),
+    )
   })
 
   it('写入被归一：未知键与错类型都进不了磁盘', () => {
@@ -50,7 +62,8 @@ describe('createSettingsStore', () => {
 
     const saved = store.save({ translateText: 'on', trojan: 1 })
 
-    expect(saved).toEqual({ translateText: true, translateCharts: true })
+    expect(saved).toEqual(expect.objectContaining({ translateText: true, translateCharts: true }))
+    expect(Object.keys(saved).sort()).toEqual(['freezeAccelerator', 'translateCharts', 'translateText'])
     expect(store.read()).toEqual(saved)
   })
 
@@ -61,7 +74,7 @@ describe('createSettingsStore', () => {
     // 一个发错类型的控件不该把另一个正常字段打回出厂值。
     const after = store.save({ translateText: 'on' })
 
-    expect(after).toEqual({ translateText: true, translateCharts: false })
+    expect(after).toEqual(expect.objectContaining({ translateText: true, translateCharts: false }))
     expect(store.read()).toEqual(after)
   })
 
@@ -86,7 +99,7 @@ describe('createSettingsStore', () => {
       onReadFailure: (error) => failures.push(error.message),
     })
 
-    expect(store.read()).toEqual({ translateText: true, translateCharts: true })
+    expect(store.read()).toEqual(SETTINGS_DEFAULTS)
     expect(failures).toHaveLength(1)
     expect(failures[0]).toContain('settings.json')
 

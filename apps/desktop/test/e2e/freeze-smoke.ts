@@ -136,6 +136,46 @@ async function verifyShortcuts(): Promise<void> {
   check('注销后 Electron 侧已释放', !globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
 }
 
+/**
+ * 改冻结热键的真链路：控制器在真实 globalShortcut 上换键。
+ *
+ * 单测的注册表是替身，证明不了「系统热键表真的跟着换」；这里要验的是旧键从系统侧消失、
+ * 新键真的被系统收下，以及新键被占用时旧键还在（改失败不该把用户原来的热键弄丢）。
+ */
+async function verifyHotkeyReassignment(): Promise<void> {
+  const manager = new ShortcutManager({
+    register: (accelerator, handler) => globalShortcut.register(accelerator, handler),
+    unregister: (accelerator) => globalShortcut.unregister(accelerator),
+    isRegistered: (accelerator) => globalShortcut.isRegistered(accelerator),
+  })
+  const controller = createFreezeController({
+    // 本函数只碰热键，冻结链路一律给空实现：真跑一遍截屏会落到用户的桌面上。
+    listDisplays: () => [],
+    captureFrames: async () => [],
+    windows: {
+      create: () => {
+        throw new Error('换键不该建覆盖窗')
+      },
+    },
+    shortcuts: manager,
+    triggerAccelerator: DEFAULT_FREEZE_ACCELERATOR,
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+  })
+
+  // 刻意挑一个系统与常见应用都不占用的四键组合，免得验收跑在别人的热键冲突上。
+  const next = 'CommandOrControl+Alt+Shift+J'
+  try {
+    check('换键前旧键在系统侧已注册', controller.start() && globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
+
+    check('控制器接受新键', controller.applyTriggerAccelerator(next))
+    check('新键在系统侧真注册上', globalShortcut.isRegistered(next))
+    check('旧键已从系统侧释放', !globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
+  } finally {
+    controller.dispose()
+  }
+  check('注销后新旧键都已释放', !globalShortcut.isRegistered(next) && !globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
+}
+
 function displayLikeOf(display: Electron.Display) {
   return {
     id: display.id,
@@ -636,6 +676,19 @@ async function verifyClipboardCopy(): Promise<void> {
     backupTypes,
   )
 
+  // 立刻把内容取成内存 Blob，而不是等收尾再取。clipboard.read() 发回的是惰性句柄，取数要回到
+  // 粘贴板；本函数中途会往剪贴板写探针图，换过 owner 之后旧内容就可能再也取不回来（实测：
+  // 收尾时才重建，文本条目直接取数失败，于是还原成了清空，把用户的剪贴板吃掉）。
+  const snapshot = await rebuildClipboardItems(backup)
+  const backedUpItems = backup.filter((item) =>
+    item.types.some((type) => !type.startsWith('electron application/')),
+  ).length
+  check(
+    '开工前的用户内容已就地取成内存快照（晚取会取不回来）',
+    snapshot.length === backedUpItems,
+    { snapshot: snapshot.length, expected: backedUpItems },
+  )
+
   try {
     const copier = createSelectionCopier({
       readSources: async (): Promise<readonly SelectionSource[]> => [{ display, frame, locked }],
@@ -687,9 +740,8 @@ async function verifyClipboardCopy(): Promise<void> {
     )
   } finally {
     // 还原用户现场：无论断言成败都要把开工前的内容写回去，不能让验收动作留在用户的剪贴板里。
-    const rebuilt = await rebuildClipboardItems(backup)
-    if (rebuilt.length > 0) {
-      await clipboard.write(rebuilt)
+    if (snapshot.length > 0) {
+      await clipboard.write(snapshot)
     } else {
       clipboard.clear()
     }
@@ -722,6 +774,8 @@ async function verifyClipboardCopy(): Promise<void> {
  * clipboard.write 明确拒绝 write 一个来自 clipboard.read 的 ClipboardItem，必须新建；
  * 少数平台类型（文件承诺一类）不给可序列化载荷，只能略过，那一部分格式在还原后会丢，
  * 这是把验收动作压在用户现场上必须认下的代价。
+ *
+ * 必须在动剪贴板之前调用：它要把每个条目的载荷取进内存，而句柄的取数依赖当时那份粘贴板内容。
  */
 async function rebuildClipboardItems(
   items: readonly Electron.ClipboardItem[],
@@ -1106,6 +1160,25 @@ async function verifySettingsRoundTrip(): Promise<void> {
       'document.getElementById("setting-translate-charts").checked',
     )
     check('保存成功后控件停在勾选态', controlChecked === true, controlChecked)
+
+    // 热键走的是另一条路：keydown → 页面算出 accelerator → 桥 → 落盘。这条链只在真浏览器里成立。
+    const hotkeyShown = await window.webContents.executeJavaScript(
+      'document.getElementById("setting-freeze-accelerator").value',
+    )
+    check(
+      '设置页把服务端的热键回填进热键框',
+      typeof hotkeyShown === 'string' && hotkeyShown !== '',
+      hotkeyShown,
+    )
+
+    await window.webContents.executeJavaScript(
+      'document.getElementById("setting-freeze-accelerator").dispatchEvent(new KeyboardEvent("keydown", { key: "j", metaKey: true, altKey: true }))',
+    )
+    check(
+      '按下组合键后新热键落到 settings.json',
+      await waitFor(() => readOnDisk()?.freezeAccelerator === 'Command+Alt+J'),
+      readOnDisk()?.freezeAccelerator,
+    )
   } catch (error) {
     check('设置页往返冒烟未抛异常', false, error instanceof Error ? error.message : String(error))
   } finally {
@@ -1121,6 +1194,7 @@ async function verifySettingsRoundTrip(): Promise<void> {
 app.whenReady().then(async () => {
   try {
     await verifyShortcuts()
+    await verifyHotkeyReassignment()
     const window = await verifyOverlayWindow()
     await verifyCandidateHighlight(window)
     await verifySelectionLock(window)

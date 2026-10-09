@@ -1,7 +1,12 @@
 import type { BrowserWindowConstructorOptions } from 'electron'
 import type { DisplayLike } from './geometry'
 
-/** 默认触发热键；S9 接入设置项后由用户配置覆盖，此处是单一默认来源。 */
+/**
+ * 默认触发热键：用户没写下自己的键位时用这个。
+ *
+ * 热键能被设置项覆盖，但「默认键位」只在这里写一次，设置层的默认值由装配处从这里取，
+ * 免得多出一份会漂移的副本。
+ */
 export const DEFAULT_FREEZE_ACCELERATOR = 'CommandOrControl+Shift+X'
 
 /**

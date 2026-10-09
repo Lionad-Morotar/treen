@@ -184,6 +184,62 @@ describe('freeze controller: start', () => {
   })
 })
 
+describe('freeze controller: 改触发热键', () => {
+  const NEXT = 'Alt+T'
+
+  it('换键后旧键释放、新键接手，按新键能进入冻结', async () => {
+    const harness = createHarness()
+    harness.controller.start()
+
+    expect(harness.controller.applyTriggerAccelerator(NEXT)).toBe(true)
+    expect(harness.shortcuts.handlers.has(TRIGGER)).toBe(false)
+    expect(harness.shortcuts.handlers.has(NEXT)).toBe(true)
+
+    harness.shortcuts.handlers.get(NEXT)?.()
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
+  })
+
+  it('新键被别的应用占着时保留旧键，不让改一次键反而丢了原来的热键', async () => {
+    const harness = createHarness({ acceptAccelerator: (accelerator) => accelerator !== NEXT })
+    harness.controller.start()
+
+    expect(harness.controller.applyTriggerAccelerator(NEXT)).toBe(false)
+    expect(harness.shortcuts.handlers.has(TRIGGER)).toBe(true)
+    expect(harness.shortcuts.handlers.has(NEXT)).toBe(false)
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
+  })
+
+  it('新键与当前键相同时不做无谓的释放重注册，直接回报现状', () => {
+    const harness = createHarness()
+    harness.controller.start()
+
+    expect(harness.controller.applyTriggerAccelerator(TRIGGER)).toBe(true)
+    expect(harness.shortcuts.handlers.has(TRIGGER)).toBe(true)
+  })
+
+  it('换键之后旧键不再能触发冻结', async () => {
+    const harness = createHarness()
+    harness.controller.start()
+    harness.controller.applyTriggerAccelerator(NEXT)
+
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+
+    expect(harness.controller.isFrozen()).toBe(false)
+  })
+
+  it('dispose 之后不再改键，也不把已释放的键装回来', () => {
+    const harness = createHarness()
+    harness.controller.start()
+    harness.controller.dispose()
+
+    expect(harness.controller.applyTriggerAccelerator(NEXT)).toBe(false)
+    expect(harness.shortcuts.handlers.has(NEXT)).toBe(false)
+    expect(harness.shortcuts.handlers.has(TRIGGER)).toBe(false)
+  })
+})
+
 describe('freeze controller: 重复触发热键', () => {
   async function frozenHarness() {
     const harness = createHarness()

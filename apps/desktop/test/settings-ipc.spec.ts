@@ -53,54 +53,62 @@ describe('registerSettingsIpc', () => {
     const store = createSettingsStore({ userDataDir: tempDir() })
     registerSettingsIpc({ ipc, store })
 
-    expect(await invoke(IPC_CHANNELS.settingsGet)).toEqual({
-      translateText: true,
-      translateCharts: true,
-    })
-    expect(await invoke(IPC_CHANNELS.settingsSet, { translateCharts: false })).toEqual({
-      translateText: true,
-      translateCharts: false,
-    })
-    expect(await invoke(IPC_CHANNELS.settingsGet)).toEqual({
-      translateText: true,
-      translateCharts: false,
-    })
+    expect(await invoke(IPC_CHANNELS.settingsGet)).toEqual(
+      expect.objectContaining({ translateText: true, translateCharts: true }),
+    )
+    expect(await invoke(IPC_CHANNELS.settingsSet, { translateCharts: false })).toEqual(
+      expect.objectContaining({ translateText: true, translateCharts: false }),
+    )
+    expect(await invoke(IPC_CHANNELS.settingsGet)).toEqual(
+      expect.objectContaining({ translateText: true, translateCharts: false }),
+    )
   })
 
   it('set 的载荷不是对象时按空补丁处理，不炸也不改值', async () => {
     const { ipc, invoke } = fakeIpc()
     registerSettingsIpc({ ipc, store: createSettingsStore({ userDataDir: tempDir() }) })
 
-    expect(await invoke(IPC_CHANNELS.settingsSet, 'garbage')).toEqual({
-      translateText: true,
+    expect(await invoke(IPC_CHANNELS.settingsSet, 'garbage')).toEqual(
+      expect.objectContaining({ translateText: true, translateCharts: true }),
+    )
+  })
+
+  it('写回成功后调用 apply，让装配层接即时生效的联动', async () => {
+    const { ipc, invoke } = fakeIpc()
+    const apply = vi.fn()
+    registerSettingsIpc({ ipc, store: createSettingsStore({ userDataDir: tempDir() }), apply })
+
+    await invoke(IPC_CHANNELS.settingsSet, { translateText: false })
+
+    expect(apply).toHaveBeenCalledWith({
+      freezeAccelerator: expect.any(String),
+      translateText: false,
       translateCharts: true,
     })
   })
 
-  it('写回成功后调用 onSaved，让装配层接即时生效的联动', async () => {
+  it('apply 抛错即视为保存失败：抛出给渲染层，并把刚写下的值回滚', async () => {
     const { ipc, invoke } = fakeIpc()
-    const onSaved = vi.fn()
-    registerSettingsIpc({ ipc, store: createSettingsStore({ userDataDir: tempDir() }), onSaved })
-
-    await invoke(IPC_CHANNELS.settingsSet, { translateText: false })
-
-    expect(onSaved).toHaveBeenCalledWith({ translateText: false, translateCharts: true })
-  })
-
-  it('onSaved 抛错不影响写入结果，只记一条告警', async () => {
-    const { ipc, invoke } = fakeIpc()
+    const store = createSettingsStore({ userDataDir: tempDir() })
+    store.save({ translateCharts: false })
     const warn = vi.fn()
     registerSettingsIpc({
       ipc,
-      store: createSettingsStore({ userDataDir: tempDir() }),
-      onSaved: () => {
-        throw new Error('重注册失败')
+      store,
+      apply: () => {
+        throw new Error('热键被占用')
       },
       logger: { warn },
     })
 
-    const saved = await invoke(IPC_CHANNELS.settingsSet, { translateText: false })
-    expect(saved).toEqual({ translateText: false, translateCharts: true })
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('联动失败'))
+    // handler 同步抛错在真实 Electron 里就是渲染端 invoke 的 rejection，替身里同样以抛错表达。
+    expect(() => invoke(IPC_CHANNELS.settingsSet, { translateText: false })).toThrow('热键被占用')
+    // 磁盘上不能留下「记着但没生效」的中间态。
+    expect(await invoke(IPC_CHANNELS.settingsGet)).toEqual({
+      freezeAccelerator: expect.any(String),
+      translateText: true,
+      translateCharts: false,
+    })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('已回滚'))
   })
 })

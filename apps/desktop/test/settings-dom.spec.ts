@@ -13,9 +13,18 @@ import { describe, expect, it, vi } from 'vitest'
 
 interface ElementLike {
   checked: boolean
+  value: string
   textContent: string | null
   getAttribute(name: string): string | null
   addEventListener(type: string, listener: (event: { target: ElementLike }) => void): void
+}
+
+interface KeyEventInit {
+  key: string
+  metaKey?: boolean
+  ctrlKey?: boolean
+  altKey?: boolean
+  shiftKey?: boolean
 }
 
 interface WindowLike {
@@ -24,6 +33,7 @@ interface WindowLike {
     addEventListener(type: string, listener: () => void): void
   }
   Event: new (type: string) => unknown
+  KeyboardEvent: new (type: string, init?: KeyEventInit) => unknown
   treenSettings?: { get(): Promise<unknown>; set(patch: unknown): Promise<unknown> }
 }
 
@@ -146,6 +156,76 @@ describe('settings.html 的读写往返', () => {
     expect(field(window, 'settings-status').textContent).toContain('设置桥不可用')
   })
 })
+
+describe('settings.html 的冻结热键捕获', () => {
+  const HOTKEY = 'setting-freeze-accelerator'
+
+  function bridgeWith(accelerator: string) {
+    return {
+      get: vi.fn(async () => ({ freezeAccelerator: accelerator, translateText: true, translateCharts: true })),
+      set: vi.fn(async (patch: unknown) => ({
+        freezeAccelerator: accelerator,
+        translateText: true,
+        translateCharts: true,
+        ...(patch as Record<string, unknown>),
+      })),
+    }
+  }
+
+  it('打开时把服务端的键位回填到热键框', async () => {
+    const window = load(bridgeWith('Alt+T'))
+    await waitUntil(() => field(window, HOTKEY).value === 'Alt+T')
+    expect(field(window, HOTKEY).value).toBe('Alt+T')
+  })
+
+  it('按下带修饰键的组合只写回 accelerator，不落成文本', async () => {
+    const bridge = bridgeWith('Alt+T')
+    const window = load(bridge)
+    await waitUntil(() => field(window, HOTKEY).value === 'Alt+T')
+
+    dispatchKeydown(window, HOTKEY, { key: 'y', metaKey: true, shiftKey: true })
+
+    const wrote = await waitUntil(() => bridge.set.mock.calls.length > 0)
+    expect(wrote).toBe(true)
+    expect(bridge.set).toHaveBeenCalledWith({ freezeAccelerator: 'Command+Shift+Y' })
+  })
+
+  it('缺主修饰键的组合不写回，并给出可见提示', async () => {
+    const bridge = bridgeWith('Alt+T')
+    const window = load(bridge)
+    await waitUntil(() => field(window, HOTKEY).value === 'Alt+T')
+
+    // 只带 Shift 的键位一旦注册成全局热键，会在所有应用里截走这个键。
+    dispatchKeydown(window, HOTKEY, { key: 'y', shiftKey: true })
+
+    const flagged = await waitUntil(
+      () => field(window, 'settings-status').getAttribute('data-kind') === 'error',
+    )
+    expect(flagged).toBe(true)
+    expect(bridge.set).not.toHaveBeenCalled()
+  })
+
+  it('单独的 Escape 不写回（它是冻结态的退出键）', async () => {
+    const bridge = bridgeWith('Alt+T')
+    const window = load(bridge)
+    await waitUntil(() => field(window, HOTKEY).value === 'Alt+T')
+
+    dispatchKeydown(window, HOTKEY, { key: 'Escape', metaKey: true })
+
+    const flagged = await waitUntil(
+      () => field(window, 'settings-status').getAttribute('data-kind') === 'error',
+    )
+    expect(flagged).toBe(true)
+    expect(bridge.set).not.toHaveBeenCalled()
+  })
+})
+
+/** 派发一次 keydown（jsdom 的 KeyboardEvent 类型经最小接口暴露）。 */
+function dispatchKeydown(window: WindowLike, id: string, init: KeyEventInit): void {
+  const element = window.document.getElementById(id)
+  const target = element as unknown as { dispatchEvent(event: unknown): boolean }
+  target.dispatchEvent(new window.KeyboardEvent('keydown', init))
+}
 
 /** 派发一次 change 事件（jsdom 的 Event 类型经最小接口暴露）。 */
 function dispatchChange(window: WindowLike, id: string): void {

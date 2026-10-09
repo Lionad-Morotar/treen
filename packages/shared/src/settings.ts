@@ -23,6 +23,8 @@ export const DEFAULT_TRANSLATE_CHARTS = true
 export const SETTINGS_FILENAME = 'settings.json'
 
 export interface TreenSettings {
+  /** 进入冻结态的全局热键；形态是 Electron accelerator 字符串 */
+  freezeAccelerator: string
   /** 是否覆盖译文（关掉仍可能因图表开关而运行 OCR） */
   translateText: boolean
   /** 是否提取并覆盖 mermaid 图表 */
@@ -44,6 +46,14 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 /**
+ * 字符串字段的归一。空串与纯空白视为无效：一个空的 accelerator 注册不上，
+ * 留在磁盘里只会让下次启动静默丢掉热键，不如当场回落。
+ */
+function readString(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() !== '' ? value : fallback
+}
+
+/**
  * 把任意来源的对象归一成合法设置：只认默认值对象声明过的键，逐字段做类型校验，
  * 不符即回落到该字段的默认值。未声明的键直接丢弃（写入端因此天然拒收未知键）。
  *
@@ -53,6 +63,7 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
 export function normalizeSettings(raw: unknown, defaults: TreenSettings): TreenSettings {
   const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   return {
+    freezeAccelerator: readString(source.freezeAccelerator, defaults.freezeAccelerator),
     translateText: readBoolean(source.translateText, defaults.translateText),
     translateCharts: readBoolean(source.translateCharts, defaults.translateCharts),
   }

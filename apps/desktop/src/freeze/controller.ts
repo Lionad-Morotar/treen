@@ -142,6 +142,11 @@ export interface FreezeControllerDeps {
 export interface FreezeController {
   /** 注册触发热键；返回是否注册成功（被占用时为 false） */
   start(): boolean
+  /**
+   * 换用新的触发热键，返回是否成功。
+   * 新键被别的应用占着时保留旧键继续可用，不让用户改一次键反而把自己的热键弄丢。
+   */
+  applyTriggerAccelerator(accelerator: string): boolean
   enter(): Promise<void>
   exit(): void
   /** 应用退出前调用：注销全部快捷键并拆掉覆盖层；此后 enter 不再生效 */
@@ -151,7 +156,9 @@ export interface FreezeController {
 }
 
 export function createFreezeController(deps: FreezeControllerDeps): FreezeController {
-  const triggerAccelerator = deps.triggerAccelerator ?? DEFAULT_FREEZE_ACCELERATOR
+  // 热键可改，故不是常量：注册与注销都以此为准，改键后旧键必须被释放。
+  let triggerAccelerator = deps.triggerAccelerator ?? DEFAULT_FREEZE_ACCELERATOR
+  let triggerRegistered = false
   const exitAccelerator = deps.exitAccelerator ?? FREEZE_EXIT_ACCELERATOR
   const copyAccelerator = deps.copyAccelerator ?? FREEZE_COPY_ACCELERATOR
   const lockPollIntervalMs = deps.lockPollIntervalMs ?? DEFAULT_LOCK_POLL_INTERVAL_MS
@@ -430,8 +437,8 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     return entering
   }
 
-  function start(): boolean {
-    return deps.shortcuts.register(triggerAccelerator, () => {
+  function registerTrigger(accelerator: string): boolean {
+    const ok = deps.shortcuts.register(accelerator, () => {
       // 热键在冻结态里是开关：用户按第二下想要的是「取消」，而不是按了没反应。
       // 只在真的已经冻结时走退出；进入在途时（截屏未回）第二下仍是幂等的重入，
       // 打断它需要给进入流程加中止语义，那是另一件事。
@@ -442,16 +449,46 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       // 失败已在 doEnter 内经 reportError 呈现，这里吞掉 rejection 只为避免未处理拒绝告警。
       void enter().catch(() => {})
     })
+    triggerRegistered = ok
+    return ok
+  }
+
+  function start(): boolean {
+    return registerTrigger(triggerAccelerator)
+  }
+
+  /**
+   * 改触发热键。
+   *
+   * 先释放旧键再注册新键：新旧键相同时先注册会因「已被自己占用」而失败。
+   * 反过来，新键若被别的应用占着，注册失败后旧键已经不在了，故要把旧键装回去，
+   * 否则用户敲错一个键的代价是连原来的热键也丢了。
+   */
+  function applyTriggerAccelerator(accelerator: string): boolean {
+    if (disposed || accelerator === triggerAccelerator) {
+      return triggerRegistered
+    }
+    const previous = triggerAccelerator
+    deps.shortcuts.unregister(previous)
+    triggerRegistered = false
+    if (registerTrigger(accelerator)) {
+      triggerAccelerator = accelerator
+      return true
+    }
+    registerTrigger(previous)
+    return false
   }
 
   function dispose(): void {
     disposed = true
     exit()
     deps.shortcuts.unregisterAll()
+    triggerRegistered = false
   }
 
   return {
     start,
+    applyTriggerAccelerator,
     enter,
     exit,
     dispose,

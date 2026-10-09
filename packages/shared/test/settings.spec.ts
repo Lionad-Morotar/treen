@@ -13,7 +13,16 @@ import {
   type TreenSettings,
 } from '../src/settings'
 
-const DEFAULTS: TreenSettings = { translateText: true, translateCharts: true }
+const DEFAULTS: TreenSettings = {
+  freezeAccelerator: 'CommandOrControl+Shift+X',
+  translateText: true,
+  translateCharts: true,
+}
+
+/** 以默认值为底，只写本次要断言差异的字段。 */
+function withDefaults(patch: Partial<TreenSettings>): TreenSettings {
+  return { ...DEFAULTS, ...patch }
+}
 const tempDirs: string[] = []
 
 function tempDir(): string {
@@ -50,14 +59,19 @@ describe('normalizeSettings', () => {
   it('逐字段按类型取值，类型不符的字段回落到该字段默认值', () => {
     expect(
       normalizeSettings({ translateText: false, translateCharts: 'yes' }, DEFAULTS),
-    ).toEqual({ translateText: false, translateCharts: true })
+    ).toEqual(withDefaults({ translateText: false }))
+  })
+
+  it('空串与纯空白的热键不算有效值，回落到默认键位', () => {
+    expect(normalizeSettings({ freezeAccelerator: '' }, DEFAULTS)).toEqual(DEFAULTS)
+    expect(normalizeSettings({ freezeAccelerator: '   ' }, DEFAULTS)).toEqual(DEFAULTS)
+    expect(normalizeSettings({ freezeAccelerator: 42 }, DEFAULTS)).toEqual(DEFAULTS)
   })
 
   it('丢弃未声明的键', () => {
-    expect(normalizeSettings({ translateText: false, evil: 'drop me' }, DEFAULTS)).toEqual({
-      translateText: false,
-      translateCharts: true,
-    })
+    expect(normalizeSettings({ translateText: false, evil: 'drop me' }, DEFAULTS)).toEqual(
+      withDefaults({ translateText: false }),
+    )
   })
 
   it('非对象输入整体回落默认', () => {
@@ -74,10 +88,12 @@ describe('readSettings', () => {
 
   it('读回已写入的值', () => {
     const file = writeFixture('{"translateText": false, "translateCharts": true}\n')
-    expect(readSettings({ file, defaults: DEFAULTS })).toEqual({
-      translateText: false,
-      translateCharts: true,
-    })
+    expect(readSettings({ file, defaults: DEFAULTS })).toEqual(withDefaults({ translateText: false }))
+  })
+
+  it('热键是字符串字段，写什么读回什么', () => {
+    const file = writeFixture('{"freezeAccelerator": "Alt+T"}\n')
+    expect(readSettings({ file, defaults: DEFAULTS }).freezeAccelerator).toBe('Alt+T')
   })
 
   it('JSON 整体损坏时全部默认并记一条告警', () => {
@@ -89,10 +105,7 @@ describe('readSettings', () => {
 
   it('单个字段坏掉不牵连另一个字段', () => {
     const file = writeFixture('{"translateText": false, "translateCharts": 3}')
-    expect(readSettings({ file, defaults: DEFAULTS })).toEqual({
-      translateText: false,
-      translateCharts: true,
-    })
+    expect(readSettings({ file, defaults: DEFAULTS })).toEqual(withDefaults({ translateText: false }))
   })
 
   it('文件存在却读不出来时抛带路径上下文的错，不静默按默认处理', () => {
@@ -114,7 +127,7 @@ describe('writeSettings', () => {
       defaults: DEFAULTS,
     })
 
-    expect(written).toEqual({ translateText: true, translateCharts: false })
+    expect(written).toEqual(withDefaults({ translateCharts: false }))
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(written)
   })
 

@@ -1,8 +1,7 @@
 import { join } from 'node:path'
 import { BrowserWindow, app, dialog, ipcMain } from 'electron'
-import { createLogger, readDeepSeekKey } from '@treen/shared'
+import { createLogger, readDeepSeekKey, type TreenSettings } from '@treen/shared'
 import {
-  DEFAULT_FREEZE_ACCELERATOR,
   ShortcutManager,
   createFreezeController,
   type FreezeController,
@@ -33,6 +32,14 @@ import { describeStartup } from './startup'
 const logger = createLogger('desktop')
 
 let freeze: FreezeController | null = null
+
+/**
+ * 让设置生效的钩子，由冻结域在就绪时装上。
+ *
+ * 设置通道要在窗口打开前就注册好，冻结域却在之后才建起来，故两者之间需要这么一个接点；
+ * 为 null 时（启动的极短窗口内）没有可生效的对象，写入照常落盘。
+ */
+let applySettings: ((settings: TreenSettings) => void) | null = null
 
 /**
  * 主窗口即设置页：应用启动后常驻的界面只有设置，没有其它内容页。
@@ -85,10 +92,15 @@ function setupSettings(): SettingsStore {
       })
     },
   })
-  registerSettingsIpc({ ipc: ipcMain, store, logger })
+  registerSettingsIpc({
+    ipc: ipcMain,
+    store,
+    logger,
+    apply: (next) => applySettings?.(next),
+  })
   const current = store.read()
   logger.info(
-    `设置已就绪：翻译文本${current.translateText ? '开' : '关'}、翻译图表${current.translateCharts ? '开' : '关'}`,
+    `设置已就绪：热键 ${current.freezeAccelerator}、翻译文本${current.translateText ? '开' : '关'}、翻译图表${current.translateCharts ? '开' : '关'}`,
   )
   return store
 }
@@ -155,6 +167,7 @@ function setupFreeze(settings: SettingsStore): void {
     logger,
   })
 
+  const triggerAccelerator = settings.read().freezeAccelerator
   const controller = createFreezeController({
     listDisplays,
     captureFrames,
@@ -163,6 +176,7 @@ function setupFreeze(settings: SettingsStore): void {
     pointOfInterest,
     buildCandidates: createCandidateBuilder({ logger }),
     copySelection,
+    triggerAccelerator,
     onRegionLocked: buildRegionLockAction(settings),
     // 进入冻结失败（最常见的首跑原因是未授予屏幕录制权限）必须让用户看见，否则表现成「按了没反应」。
     reportError: (message) => {
@@ -175,11 +189,20 @@ function setupFreeze(settings: SettingsStore): void {
     logger,
   })
   if (controller.start()) {
-    logger.info(`冻结热键就绪：${DEFAULT_FREEZE_ACCELERATOR}`)
+    logger.info(`冻结热键就绪：${triggerAccelerator}`)
   } else {
-    logger.warn('冻结热键注册失败，可能已被其它应用占用；请改用其它组合键（设置项待后续切片提供）')
+    // 键位被别的应用占着是常态，不是致命错误：应用照常起来，用户去设置页换个键即可。
+    logger.warn(`冻结热键 ${triggerAccelerator} 注册失败（可能已被其它应用占用），可在设置页换一个组合键`)
   }
   freeze = controller
+  // 设置里改了键位要当场生效：改完再按新键就该冻结。注册失败时抛出，由 IPC 层回滚配置并回报失败。
+  applySettings = (next) => {
+    if (controller.applyTriggerAccelerator(next.freezeAccelerator)) {
+      logger.info(`冻结热键已改为：${next.freezeAccelerator}`)
+      return
+    }
+    throw new Error(`热键 ${next.freezeAccelerator} 注册失败，可能已被其它应用占用`)
+  }
 }
 
 app.whenReady().then(() => {

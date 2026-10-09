@@ -8,6 +8,7 @@ import {
   type SettingsLogger,
   type TreenSettings,
 } from '@treen/shared'
+import { DEFAULT_FREEZE_ACCELERATOR } from '../freeze/window-options'
 
 /**
  * 桌面侧的设置存储：把共享层的纯读写逻辑挂到一个具体文件上（用户配置目录下的 settings.json）。
@@ -19,8 +20,12 @@ import {
  * 真实目录（`app.getPath('userData')`）在 main 装配时给出。
  */
 
-/** 开关类默认值来自共享层的产品口径；热键默认值归热键注册域，由调用方经 `defaults` 注入。 */
+/**
+ * 各字段的默认值：开关类是产品口径（共享层给出），热键默认值归热键注册域，
+ * 直接取那里的常量，避免同一键位在两处各写一份。
+ */
 export const SETTINGS_DEFAULTS: TreenSettings = {
+  freezeAccelerator: DEFAULT_FREEZE_ACCELERATOR,
   translateText: DEFAULT_TRANSLATE_TEXT,
   translateCharts: DEFAULT_TRANSLATE_CHARTS,
 }

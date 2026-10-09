@@ -17,6 +17,17 @@ import type { TreenSettings } from '@treen/shared'
 
 const REGION: Rect = { x: 0, y: 0, width: 200, height: 100 }
 
+/** 两个开关都开的一份完整设置；本文件只关心开关，热键取一个占位值。 */
+const SETTINGS: TreenSettings = {
+  freezeAccelerator: 'Alt+T',
+  translateText: true,
+  translateCharts: true,
+}
+
+function withSettings(patch: Partial<TreenSettings>): TreenSettings {
+  return { ...SETTINGS, ...patch }
+}
+
 const BLOCKS: TranslatedBlock[] = [
   { source: '原文', translation: '译文', box: { x: 0, y: 0, width: 80, height: 20 } },
 ]
@@ -77,7 +88,7 @@ function harness(overrides: HarnessOverrides = {}) {
   const info = vi.fn()
   const target = sink()
   const action = createRegionLockAction({
-    readSettings: () => overrides.settings ?? { translateText: true, translateCharts: true },
+    readSettings: () => overrides.settings ?? withSettings({}),
     translate,
     compose,
     overlays: () => overrides.overlays ?? [target.handle],
@@ -106,7 +117,7 @@ describe('createRegionLockAction：两个开关的门控', () => {
 
   it('关文本开图表：仍识别（OCR 在图链路里要用），但翻译调用被标记跳过，计划只要图', async () => {
     const { action, translate, compose, setOverlay } = harness({
-      settings: { translateText: false, translateCharts: true },
+      settings: withSettings({ translateText: false }),
     })
 
     action({ displayId: 7, region: REGION })
@@ -119,7 +130,7 @@ describe('createRegionLockAction：两个开关的门控', () => {
 
   it('开文本关图表：要译文不要图', async () => {
     const { action, translate, compose } = harness({
-      settings: { translateText: true, translateCharts: false },
+      settings: withSettings({ translateCharts: false }),
     })
 
     action({ displayId: 7, region: REGION })
@@ -131,7 +142,7 @@ describe('createRegionLockAction：两个开关的门控', () => {
 
   it('两项都关：一次触发什么都不做，连翻译都不发起', async () => {
     const { action, translate, compose, setOverlay, info } = harness({
-      settings: { translateText: false, translateCharts: false },
+      settings: withSettings({ translateText: false, translateCharts: false }),
     })
 
     action({ displayId: 7, region: REGION })
