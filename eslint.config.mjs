@@ -18,6 +18,10 @@ export default tseslint.config(
       // zRefs/ 是同类草稿区：放调试用的三方源码、探针脚本与参考资料（已由 gitignore 排除在仓外），
       // 例如压过的三方 bundle 会让全仓 lint 直接报上千条错。它不是本仓源码，不该进本仓规则。
       'zRefs/**',
+      // .claude/worktrees/ 是并行批次的施工副本，与主仓同源却可能停在未完成态；
+      // 软链副本（GL/treen 与 Github/...）共用 .claude/，从任一侧 lint 都会扫进另一侧，
+      // 把别批的中间态误报成本仓错误。副本内容由各自分支自己的 lint 覆盖。
+      '**/.claude/worktrees/**',
     ],
   },
   js.configs.recommended,
