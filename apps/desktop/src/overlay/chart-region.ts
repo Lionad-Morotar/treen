@@ -31,6 +31,14 @@ export interface ChartRegionOptions {
   bound?: Rect
   /** 垂直并入阈值系数：间距 < 系数 × 行高中位数 才并入。缺省 1.5。 */
   gapFactor?: number
+  /**
+   * 边界判据：返回 true 的观察及其以下的观察都归下一块，扩张到此为止。
+   *
+   * 几何连续性的盲区是「上下紧邻的两张图」：中间没有空行（或被 OCR 丢掉）时它们的行间距与
+   * 图内行间距一样小，纯几何会把两张图并成一块。而「这一行是另一张图的声明」是文本层的事，
+   * 不由本模块判断，故做成注入的判据，调用方按自己的域给出。
+   */
+  stopAt?: (observation: PlacedObservation, index: number) => boolean
 }
 
 export const DEFAULT_GAP_FACTOR = 1.5
@@ -138,11 +146,21 @@ function expandRegion(
   }
 
   const chosen = new Set<number>([anchorIndex])
+  // 锚点自己不计入边界扫描（它按定义就是这块图的首行）；扫到边界即停，边界那行及其以下属于下一块。
+  let limit = observations.length
+  for (let index = anchorIndex + 1; index < observations.length; index += 1) {
+    const observation = observations[index]
+    if (observation !== undefined && options.stopAt?.(observation, index) === true) {
+      limit = index
+      break
+    }
+  }
+
   for (;;) {
     const range = rangeOf(observations, chosen)
     const threshold = gapFactor * medianHeight(observations, chosen)
     let added = false
-    for (let index = anchorIndex; index < observations.length; index += 1) {
+    for (let index = anchorIndex; index < limit; index += 1) {
       if (chosen.has(index)) {
         continue
       }
@@ -186,8 +204,9 @@ export function chartRegionMembers(
 /**
  * 给定观察下标，返回它们的并集矩形；下标为空或盒子全部退化时返回 null。
  *
- * 单独暴露是因为「源码只取了几行」之后要重算矩形：裁掉的行不该还算进图的版位，否则图会撑着一片
- * 覆盖着正文的空白。区域的算法与矩形换算分家，两侧就不会各算一遍。
+ * 与 `chartRegionMembers` 配套使用，是「区域」的唯一出口：调用方拿到成员后既取这几行的源码、
+ * 又算这块矩形，两者出自同一次扩张。不提供「只要矩形」的便捷函数，是免得两条路各算一遍而悄悄
+ * 分叉（区域的边界规则一旦只加到其中一条，矩形与源码就会指不同的行）。
  */
 export function rectOfMembers(
   observations: readonly PlacedObservation[],
@@ -206,13 +225,4 @@ export function rectOfMembers(
     width: range.right - range.left,
     height: range.bottom - range.top,
   }
-}
-
-/** 图表区域：并入观察的并集矩形；求不到时 null。 */
-export function chartRegion(
-  observations: readonly PlacedObservation[],
-  anchorIndex: number,
-  options: ChartRegionOptions = {},
-): Rect | null {
-  return rectOfMembers(observations, expandRegion(observations, anchorIndex, options))
 }

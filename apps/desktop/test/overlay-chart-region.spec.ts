@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { chartRegion, rectOfMembers, type PlacedObservation } from '../src/overlay/chart-region'
+import {
+  chartRegionMembers,
+  rectOfMembers,
+  type ChartRegionOptions,
+  type PlacedObservation,
+} from '../src/overlay/chart-region'
 
 /**
  * 一块图（声明 + 两行）与三块干扰：同高不同栏的其它文本、下方远处的状态栏、选区外的溢出文字。
@@ -17,24 +22,33 @@ function scene(): PlacedObservation[] {
   ]
 }
 
+/** 区域的入口：成员与矩形出自同一次扩张，测试里也照这条路走，别只测矩形。 */
+function regionOf(
+  observations: readonly PlacedObservation[],
+  anchorIndex: number,
+  options?: ChartRegionOptions,
+) {
+  return rectOfMembers(observations, chartRegionMembers(observations, anchorIndex, options))
+}
+
 const BOUND = { x: 50, y: 50, width: 400, height: 300 }
 
-describe('chartRegion：用几何连续性求图的屏幕矩形', () => {
+describe('chart-region：用几何连续性求一块图占住的观察与矩形', () => {
   it('从声明出发并入上下相连的行，产出并集矩形', () => {
-    const region = chartRegion(scene(), 0, { bound: BOUND })
+    const region = regionOf(scene(), 0, { bound: BOUND })
 
     expect(region).toEqual({ x: 100, y: 100, width: 140, height: 70 })
   })
 
   it('同高不同栏的文本因水平不重叠而不并入', () => {
-    const region = chartRegion(scene(), 0, { bound: BOUND })
+    const region = regionOf(scene(), 0, { bound: BOUND })
 
     // 若误并入左侧文件树，x 会扩到 0。
     expect(region?.x).toBe(100)
   })
 
   it('垂直间距超过一个行高的相邻块不并入', () => {
-    const region = chartRegion(scene(), 0, { bound: BOUND })
+    const region = regionOf(scene(), 0, { bound: BOUND })
 
     // 若误并入状态栏，y+height 会盖到 420。
     expect((region?.y ?? 0) + (region?.height ?? 0)).toBe(170)
@@ -47,7 +61,7 @@ describe('chartRegion：用几何连续性求图的屏幕矩形', () => {
       { text: '选区外', box: { x: 100, y: 360, width: 100, height: 20 } },
     ]
 
-    const region = chartRegion(observations, 0, { bound: { x: 50, y: 50, width: 300, height: 300 } })
+    const region = regionOf(observations, 0, { bound: { x: 50, y: 50, width: 300, height: 300 } })
 
     expect(region).toEqual({ x: 100, y: 100, width: 80, height: 20 })
   })
@@ -58,24 +72,24 @@ describe('chartRegion：用几何连续性求图的屏幕矩形', () => {
       { text: '隔了一行', box: { x: 0, y: 60, width: 100, height: 20 } },
     ]
 
-    expect(chartRegion(observations, 0)).toEqual({ x: 0, y: 0, width: 100, height: 20 })
-    expect(chartRegion(observations, 0, { gapFactor: 4 })).toEqual({ x: 0, y: 0, width: 100, height: 80 })
+    expect(regionOf(observations, 0)).toEqual({ x: 0, y: 0, width: 100, height: 20 })
+    expect(regionOf(observations, 0, { gapFactor: 4 })).toEqual({ x: 0, y: 0, width: 100, height: 80 })
   })
 
   it('不给上界时按几何独立判定：远邻与异栏仍被挡在外面', () => {
-    const region = chartRegion(scene(), 0)
+    const region = regionOf(scene(), 0)
     // 三行图源码的并集，状态栏（y=400）与左栏文件树都不该进来。
     expect(region).toEqual({ x: 100, y: 100, width: 140, height: 70 })
   })
 
   it('锚点下标越界或锚点盒退化时返回 null', () => {
-    expect(chartRegion(scene(), 99, { bound: BOUND })).toBeNull()
+    expect(regionOf(scene(), 99, { bound: BOUND })).toBeNull()
     expect(
-      chartRegion([{ text: 'graph LR', box: { x: 0, y: 0, width: 0, height: 0 } }], 0),
+      regionOf([{ text: 'graph LR', box: { x: 0, y: 0, width: 0, height: 0 } }], 0),
     ).toBeNull()
   })
 
-  it('声明行之上的相邻行不并入——图的源码从声明行往下算', () => {
+  it('声明行之上的相邻行不并入：图的源码从声明行往下算', () => {
     const observations: PlacedObservation[] = [
       // 标题与声明之间只隔 4px（远小于行高阈值），但方向不对：并进来会把矩形往上撑到标题。
       { text: '## 三级标题', box: { x: 100, y: 76, width: 120, height: 20 } },
@@ -83,7 +97,29 @@ describe('chartRegion：用几何连续性求图的屏幕矩形', () => {
       { text: 'A --> B', box: { x: 100, y: 125, width: 140, height: 20 } },
     ]
 
-    expect(chartRegion(observations, 1)).toEqual({ x: 100, y: 100, width: 140, height: 45 })
+    expect(regionOf(observations, 1)).toEqual({ x: 100, y: 100, width: 140, height: 45 })
+  })
+
+  it('stopAt 判为边界的行及其以下不并入，两张紧贴的图不会被并成一块', () => {
+    const observations: PlacedObservation[] = [
+      { text: 'graph LR', box: { x: 0, y: 0, width: 100, height: 20 } },
+      { text: 'A --> B', box: { x: 0, y: 24, width: 140, height: 20 } },
+      { text: '下一张图的声明', box: { x: 0, y: 48, width: 100, height: 20 } },
+      { text: 'C --> D', box: { x: 0, y: 72, width: 140, height: 20 } },
+    ]
+    const stopAt = (observation: PlacedObservation, index: number) =>
+      index > 0 && observation.text === '下一张图的声明'
+
+    // 不设边界时四行一路并进去：间距 4px 远小于阈值，纯几何分不开。
+    expect(regionOf(observations, 0)).toEqual({ x: 0, y: 0, width: 140, height: 92 })
+    expect(regionOf(observations, 0, { stopAt })).toEqual({ x: 0, y: 0, width: 140, height: 44 })
+    // 边界扫描从锚点之后开始：锚点按定义是这块图的首行，任何判据都不该把它挡在外。
+    expect(regionOf(observations, 0, { stopAt: () => true })).toEqual({
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 20,
+    })
   })
 
   it('rectOfMembers 按下标子集算并集，空集为 null', () => {
@@ -97,6 +133,8 @@ describe('chartRegion：用几何连续性求图的屏幕矩形', () => {
     const observations: PlacedObservation[] = [
       { text: 'graph LR', box: { x: 0, y: 0, width: 80, height: 20 } },
     ]
-    expect(chartRegion(observations, 0, { bound: { x: 500, y: 500, width: 100, height: 100 } })).toBeNull()
+    expect(
+      regionOf(observations, 0, { bound: { x: 500, y: 500, width: 100, height: 100 } }),
+    ).toBeNull()
   })
 })

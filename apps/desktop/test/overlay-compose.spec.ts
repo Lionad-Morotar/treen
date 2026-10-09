@@ -110,6 +110,27 @@ describe('composeOverlayPlan：译文与图的覆盖计划装配', () => {
     expect(plan.texts.map((text) => text.lines.join(''))).toEqual(['Trailing prose.'])
   })
 
+  it('上下紧贴的两张图不被并成一块：上一张只取自己的行', async () => {
+    const { render, sources } = renderStub()
+    // 两张图之间没有空行（或被 OCR 丢掉），行距与图内行距一样小，纯几何分不开。
+    const blocks: OverlayBlock[] = [
+      { source: 'graph LR', translation: '图一声明', box: { x: 200, y: 100, width: 80, height: 20 } },
+      { source: 'A --> B', translation: '甲到乙', box: { x: 200, y: 125, width: 140, height: 20 } },
+      { source: 'graph TD', translation: '图二声明', box: { x: 200, y: 150, width: 80, height: 20 } },
+      { source: 'C --> D', translation: '丙到丁', box: { x: 200, y: 175, width: 140, height: 20 } },
+    ]
+
+    const plan = await composeOverlayPlan(blocks, REGION, { render })
+
+    // 若把两张图并成一块，源码含两个声明，渲染站必然语法错，两张图一起消失。
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toBe('graph LR\nA --> B')
+    const chart = plan.charts[0]!
+    expect(chart.y + chart.height).toBeLessThanOrEqual(145)
+    // 第二张图的几行没被图的版位吃掉，其译文照常覆盖。
+    expect(plan.texts.map((text) => text.lines.join(''))).toEqual(['图二声明', '丙到丁'])
+  })
+
   it('连线行落在几何区域之外（只剩声明行）时不渲染，免得用空图盖住声明行', async () => {
     const { render, sources } = renderStub()
     const blocks: OverlayBlock[] = [

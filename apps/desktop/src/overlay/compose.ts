@@ -1,7 +1,7 @@
-import { detectMermaidBlocks, hasStructuralLine } from '../mermaid/detect'
+import { detectMermaidBlocks, hasStructuralLine, isDiagramDeclaration } from '../mermaid/detect'
 import { normalizeMermaid } from '../mermaid/normalize'
 import type { MermaidRenderResult } from '../render-site/client'
-import { chartRegion, chartRegionMembers, rectOfMembers, type PlacedObservation } from './chart-region'
+import { chartRegionMembers, rectOfMembers, type PlacedObservation } from './chart-region'
 import { planOverlay, type OverlayChartInput, type OverlayPlan, type OverlayTextInput } from './layout'
 import type { Rect } from '../freeze/geometry'
 
@@ -71,13 +71,19 @@ export async function composeOverlayPlan(
 
   const charts: OverlayChartInput[] = []
   for (const candidate of detectMermaidBlocks(sourceText)) {
-    const box = chartRegion(observations, candidate.startLine, { bound: region })
-    if (box === null) {
+    const members = chartRegionMembers(observations, candidate.startLine, {
+      bound: region,
+      // 上下紧邻的两张图既没有空行分隔（或被 OCR 丢掉），行距又与图内行距一样小，纯几何分不开；
+      // 而「这一行是另一张图的声明」是文本层的事，由这里注入。不注入的话上图会把下图整块吞掉，
+      // 双声明的源码必然渲染失败，两张图一起消失。
+      stopAt: (observation, index) =>
+        index > candidate.startLine && isDiagramDeclaration(observation.text),
+    })
+    if (members.length === 0) {
       deps.logger?.warn(`mermaid 候选在第 ${candidate.startLine} 行，但选区里求不到几何区域，跳过覆盖`)
       continue
     }
 
-    const members = chartRegionMembers(observations, candidate.startLine, { bound: region })
     const lines = members.map((index) => observations[index]?.text ?? '')
     // 区域内一条连线行都没有，就没有图可言：渲染站会把裸声明还成一张空图，覆盖上去等于用空白盖住声明行。
     if (!lines.some(hasStructuralLine)) {
@@ -110,10 +116,13 @@ export async function composeOverlayPlan(
         `mermaid 候选在第 ${candidate.startLine} 行：区域末尾 ${members.length - covered.length} 行不是图内容，源码与版位已裁到末条连线行`,
       )
     }
-    // 源码被裁过时，版位随之收到那几行：被裁掉的行还留着版位的话，图会撑着一片盖住正文的空白，
-    // 而那片空白里的译文也因此被误判为「让位」而不覆盖。
-    const finalBox = rectOfMembers(observations, covered) ?? box
-    charts.push({ svg: rendered.svg, intrinsic: rendered.intrinsic, box: finalBox })
+    // 版位由实际覆盖的那几行算：被裁掉的行还留着版位的话，图会撑着一片盖住正文的空白，
+    // 而那片空白里的译文也因此被误判为「让位」而不覆盖。covered 至少含锚点（其盒子已通过可用性检查）。
+    const box = rectOfMembers(observations, covered)
+    if (box === null) {
+      continue
+    }
+    charts.push({ svg: rendered.svg, intrinsic: rendered.intrinsic, box })
   }
 
   const texts: OverlayTextInput[] = blocks.map((block) => ({
