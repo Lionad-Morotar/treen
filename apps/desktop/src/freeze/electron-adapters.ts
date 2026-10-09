@@ -1,4 +1,5 @@
 import { BrowserWindow, desktopCapturer, globalShortcut, screen } from 'electron'
+import type { NativeImage } from 'electron'
 import type { Point, Rect, Size } from './geometry'
 import type {
   FreezeFrame,
@@ -96,6 +97,47 @@ export async function readLockedRegion(window: BrowserWindow): Promise<Rect | nu
     'typeof window.__treenGetLocked === "function" ? window.__treenGetLocked() : null',
   )
   return isRect(value) ? value : null
+}
+
+/**
+ * 抓到的图里有没有真正画出来的像素。
+ *
+ * 只看 alpha 通道：覆盖窗是透明的，没画东西的地方 alpha 为 0；而有内容的像素必定不透明。
+ * 必须逐点扫而不是抽样——探针内容可能只占一小块，抽样会把它漏成「全透明」。
+ */
+function hasVisiblePixels(image: NativeImage): boolean {
+  const bitmap = image.toBitmap()
+  for (let offset = 3; offset < bitmap.length; offset += 4) {
+    if (bitmap[offset] !== 0) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * 抓某个窗口当前渲染结果里的一块（显示器相对 DIP）并编码成 PNG；窗口已销毁或抓不到像素为 null。
+ *
+ * 抓的是渲染结果而非原始截屏帧，因此译文与图这类只存在于渲染层的覆盖内容自然带进来；
+ * rect 的尺度是 DIP（覆盖窗与显示器等大，窗口内容坐标与该屏坐标系重合）。
+ * 单独导出是为了让真链路冒烟能拿它在一个自建的隐藏窗口上跑，而不必复用会弹到桌面上的建窗工厂。
+ *
+ * 「抓不到像素」有两种形态，都要挡：（一）图是空的；（二）图有尺寸有缓冲但整幅全透明——
+ * 窗口首绘之前、或合成器交出空白帧时就是这个样子，`isEmpty()` 判不出来。放它过去的话，
+ * 合成拷贝会往用户剪贴板里塞一张看不见的透明图，而验收口径是宁可什么都不写。
+ */
+export async function captureRegionPng(
+  window: BrowserWindow,
+  region: Rect,
+): Promise<Uint8Array | null> {
+  if (window.isDestroyed()) {
+    return null
+  }
+  const image = await window.webContents.capturePage(region)
+  if (image.isEmpty() || !hasVisiblePixels(image)) {
+    return null
+  }
+  return image.toPNG()
 }
 
 /**
@@ -201,6 +243,16 @@ export function createOverlayWindowFactory(
           return window.isDestroyed() ? null : { display, frame, locked }
         },
         readLocked: () => readLockedRegion(window),
+        captureComposite: async (region) => {
+          try {
+            return await captureRegionPng(window, region)
+          } catch (error) {
+            logger?.warn(
+              `合成抓取失败：${error instanceof Error ? error.message : String(error)}`,
+            )
+            return null
+          }
+        },
         setOverlay: (plan) => {
           if (window.isDestroyed()) {
             return

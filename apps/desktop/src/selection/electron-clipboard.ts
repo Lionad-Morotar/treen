@@ -37,3 +37,20 @@ export function frameCropWriter(
     ])
   }
 }
+
+/**
+ * 生成「把一份 PNG 字节写进剪贴板」的动作，供合成拷贝用。
+ *
+ * 与帧裁剪共用同一条写入形态（Blob + image/png），差别只在于字节从哪来：那边是本地解码裁剪，
+ * 这边是覆盖窗渲染结果的抓取产物，写入面完全一致。
+ */
+export function pngClipboardWriter(): (png: Uint8Array) => Promise<void> {
+  return async (png) => {
+    if (png.length === 0) {
+      throw new Error('合成拷贝：抓到的 PNG 是空的')
+    }
+    await clipboard.write([
+      new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) }),
+    ])
+  }
+}

@@ -10,6 +10,7 @@ import {
 } from './geometry'
 import {
   DEFAULT_FREEZE_ACCELERATOR,
+  FREEZE_COMPOSITE_COPY_ACCELERATOR,
   FREEZE_COPY_ACCELERATOR,
   FREEZE_EXIT_ACCELERATOR,
 } from './window-options'
@@ -63,6 +64,12 @@ export interface OverlayWindowHandle {
   readLocked(): Promise<Rect | null>
   /** 注入覆盖计划（译文与图表的落点）；窗口已销毁时实现方须静默忽略。 */
   setOverlay(plan: OverlayPlan): void
+  /**
+   * 抓取本窗当前渲染结果中的一块（显示器相对 DIP）的 PNG 字节；窗口已失效或抓取不到像素时为 null。
+   *
+   * 取的是渲染结果而非原始截屏帧：译文与图这类覆盖内容只存在于渲染结果里。
+   */
+  captureComposite(region: Rect): Promise<Uint8Array | null>
 }
 
 /**
@@ -115,6 +122,13 @@ export interface FreezeControllerDeps {
    * 拷贝失败不该把冻结态整个拆掉，但也不能静默无反应。
    */
   copySelection?: () => unknown
+  /** 合成拷贝键；缺省用内置默认 */
+  compositeAccelerator?: string
+  /**
+   * 冻结期把覆盖窗当前渲染结果（译文与图）拷进剪贴板。缺省即不注册该键。
+   * 成败处置与 `copySelection` 同：只落日志，不拆冻结态。
+   */
+  copyComposite?: () => unknown
   /**
    * 冻结期轮询到某屏出现新锁定时触发翻译。缺省即不轮询——冻结只铺画面与出口。
    *
@@ -142,6 +156,11 @@ export interface FreezeControllerDeps {
 export interface FreezeController {
   /** 注册触发热键；返回是否注册成功（被占用时为 false） */
   start(): boolean
+  /**
+   * 换用新的触发热键，返回是否成功。
+   * 新键被别的应用占着时保留旧键继续可用，不让用户改一次键反而把自己的热键弄丢。
+   */
+  applyTriggerAccelerator(accelerator: string): boolean
   enter(): Promise<void>
   exit(): void
   /** 应用退出前调用：注销全部快捷键并拆掉覆盖层；此后 enter 不再生效 */
@@ -151,9 +170,12 @@ export interface FreezeController {
 }
 
 export function createFreezeController(deps: FreezeControllerDeps): FreezeController {
-  const triggerAccelerator = deps.triggerAccelerator ?? DEFAULT_FREEZE_ACCELERATOR
+  // 热键可改，故不是常量：注册与注销都以此为准，改键后旧键必须被释放。
+  let triggerAccelerator = deps.triggerAccelerator ?? DEFAULT_FREEZE_ACCELERATOR
+  let triggerRegistered = false
   const exitAccelerator = deps.exitAccelerator ?? FREEZE_EXIT_ACCELERATOR
   const copyAccelerator = deps.copyAccelerator ?? FREEZE_COPY_ACCELERATOR
+  const compositeAccelerator = deps.compositeAccelerator ?? FREEZE_COMPOSITE_COPY_ACCELERATOR
   const lockPollIntervalMs = deps.lockPollIntervalMs ?? DEFAULT_LOCK_POLL_INTERVAL_MS
   const timers: LockPollTimers = deps.timers ?? {
     setInterval: (handler, ms) => setInterval(handler, ms),
@@ -177,6 +199,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
   function releaseShortcuts(): void {
     deps.shortcuts.unregister(exitAccelerator)
     deps.shortcuts.unregister(copyAccelerator)
+    deps.shortcuts.unregister(compositeAccelerator)
   }
 
   /**
@@ -324,6 +347,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       throw new Error(`无法进入冻结态：退出键 ${exitAccelerator} 注册失败`)
     }
     registerActionShortcut(copyAccelerator, deps.copySelection, '拷贝冻结画面')
+    registerActionShortcut(compositeAccelerator, deps.copyComposite, '拷贝合成画面')
 
     const opened: OverlayWindowHandle[] = []
     try {
@@ -430,8 +454,8 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     return entering
   }
 
-  function start(): boolean {
-    return deps.shortcuts.register(triggerAccelerator, () => {
+  function registerTrigger(accelerator: string): boolean {
+    const ok = deps.shortcuts.register(accelerator, () => {
       // 热键在冻结态里是开关：用户按第二下想要的是「取消」，而不是按了没反应。
       // 只在真的已经冻结时走退出；进入在途时（截屏未回）第二下仍是幂等的重入，
       // 打断它需要给进入流程加中止语义，那是另一件事。
@@ -442,16 +466,46 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       // 失败已在 doEnter 内经 reportError 呈现，这里吞掉 rejection 只为避免未处理拒绝告警。
       void enter().catch(() => {})
     })
+    triggerRegistered = ok
+    return ok
+  }
+
+  function start(): boolean {
+    return registerTrigger(triggerAccelerator)
+  }
+
+  /**
+   * 改触发热键。
+   *
+   * 先释放旧键再注册新键：新旧键相同时先注册会因「已被自己占用」而失败。
+   * 反过来，新键若被别的应用占着，注册失败后旧键已经不在了，故要把旧键装回去，
+   * 否则用户敲错一个键的代价是连原来的热键也丢了。
+   */
+  function applyTriggerAccelerator(accelerator: string): boolean {
+    if (disposed || accelerator === triggerAccelerator) {
+      return triggerRegistered
+    }
+    const previous = triggerAccelerator
+    deps.shortcuts.unregister(previous)
+    triggerRegistered = false
+    if (registerTrigger(accelerator)) {
+      triggerAccelerator = accelerator
+      return true
+    }
+    registerTrigger(previous)
+    return false
   }
 
   function dispose(): void {
     disposed = true
     exit()
     deps.shortcuts.unregisterAll()
+    triggerRegistered = false
   }
 
   return {
     start,
+    applyTriggerAccelerator,
     enter,
     exit,
     dispose,

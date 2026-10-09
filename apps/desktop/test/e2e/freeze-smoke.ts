@@ -1,12 +1,25 @@
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { deflateSync } from 'node:zlib'
 // ClipboardItem 在主进程不是全局量（那是渲染端的 Web API），必须从 electron 模块取。
-import { BrowserWindow, ClipboardItem, app, clipboard, globalShortcut, nativeImage, screen } from 'electron'
+import {
+  BrowserWindow,
+  ClipboardItem,
+  app,
+  clipboard,
+  globalShortcut,
+  ipcMain,
+  nativeImage,
+  screen,
+} from 'electron'
+import { IPC_CHANNELS } from '@treen/ipc'
+import { createSettingsStore } from '../../src/settings/store'
+import { registerSettingsIpc } from '../../src/settings/ipc'
 import { ShortcutManager } from '../../src/freeze/shortcuts'
 import { createFreezeController } from '../../src/freeze/controller'
 import { DEFAULT_FREEZE_ACCELERATOR, freezeWindowOptions } from '../../src/freeze/window-options'
-import { readLockedRegion } from '../../src/freeze/electron-adapters'
+import { captureRegionPng, readLockedRegion } from '../../src/freeze/electron-adapters'
 import { createSelectionCopier } from '../../src/selection/selection'
 import { frameCropWriter } from '../../src/selection/electron-clipboard'
 import type { SelectionSource } from '../../src/freeze/controller'
@@ -56,8 +69,50 @@ function check(name: string, ok: boolean, detail?: unknown): void {
   checks.push({ name, ok, detail })
 }
 
+/**
+ * 轮询到条件成立为止，返回最终是否成立。
+ *
+ * 剪贴板与跨进程写入都不是同步生效的：`clipboard.read()` 是异步的，且观测到的值与最近一次
+ * `clipboard.write` 之间会错开一拍；设置页的写回也要经一个 IPC 往返才落盘。断言前直接读一次
+ * 会与这些异步过程赛跑，故统一走轮询。
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000, stepMs = 10): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, stepMs))
+  }
+  return predicate()
+}
+
+/**
+ * 把剪贴板内容投影成「每个条目的用户内容类型」。
+ *
+ * Electron 的 clipboard.read() 会把系统粘贴板条目一并读出来，冠以 `electron application/` 前缀
+ * （查找粘贴板，以及同一份内容在原生粘贴板上的别名格式）。它们不是用户内容：macOS 上只带这类类型的
+ * 写是空操作，还原时既写不回去，也不该拿它们当作「用户的剪贴板」参与比对。
+ *
+ * 投影保留条目边界（一项一项比对，而非拍平成一个列表）：条目被合并或拆分同样属于还原劣化，
+ * 拍平后长度对得上就会漏判。
+ */
+function userContentTypes(items: readonly Electron.ClipboardItem[]): string[] {
+  return items
+    .map((item) =>
+      item.types
+        .filter((type) => !type.startsWith('electron application/'))
+        .join('+'),
+    )
+    .filter((entry) => entry !== '')
+}
+
 // 打包产物落在 <desktop>/out/ 下，故 overlay.html 在其上一级；可用 env 覆盖。
 const overlayPath = process.env.TREEN_OVERLAY_PATH ?? resolve(__dirname, '..', 'overlay.html')
+
+// 设置页与其 preload 同处包根，随 overlay.html 一条规则。
+const settingsPath = resolve(__dirname, '..', 'settings.html')
+const settingsPreloadPath = resolve(__dirname, '..', 'settings-preload.cjs')
 
 const PROBE_PNG =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
@@ -79,6 +134,46 @@ async function verifyShortcuts(): Promise<void> {
 
   manager.unregister(DEFAULT_FREEZE_ACCELERATOR)
   check('注销后 Electron 侧已释放', !globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
+}
+
+/**
+ * 改冻结热键的真链路：控制器在真实 globalShortcut 上换键。
+ *
+ * 单测的注册表是替身，证明不了「系统热键表真的跟着换」；这里要验的是旧键从系统侧消失、
+ * 新键真的被系统收下，以及新键被占用时旧键还在（改失败不该把用户原来的热键弄丢）。
+ */
+async function verifyHotkeyReassignment(): Promise<void> {
+  const manager = new ShortcutManager({
+    register: (accelerator, handler) => globalShortcut.register(accelerator, handler),
+    unregister: (accelerator) => globalShortcut.unregister(accelerator),
+    isRegistered: (accelerator) => globalShortcut.isRegistered(accelerator),
+  })
+  const controller = createFreezeController({
+    // 本函数只碰热键，冻结链路一律给空实现：真跑一遍截屏会落到用户的桌面上。
+    listDisplays: () => [],
+    captureFrames: async () => [],
+    windows: {
+      create: () => {
+        throw new Error('换键不该建覆盖窗')
+      },
+    },
+    shortcuts: manager,
+    triggerAccelerator: DEFAULT_FREEZE_ACCELERATOR,
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+  })
+
+  // 刻意挑一个系统与常见应用都不占用的四键组合，免得验收跑在别人的热键冲突上。
+  const next = 'CommandOrControl+Alt+Shift+J'
+  try {
+    check('换键前旧键在系统侧已注册', controller.start() && globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
+
+    check('控制器接受新键', controller.applyTriggerAccelerator(next))
+    check('新键在系统侧真注册上', globalShortcut.isRegistered(next))
+    check('旧键已从系统侧释放', !globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
+  } finally {
+    controller.dispose()
+  }
+  check('注销后新旧键都已释放', !globalShortcut.isRegistered(next) && !globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
 }
 
 function displayLikeOf(display: Electron.Display) {
@@ -488,6 +583,7 @@ async function verifyFreezeShortcutLifecycle(): Promise<void> {
           setCandidates: () => {},
           readSelection: async () => null,
           readLocked: async () => null,
+          captureComposite: async () => null,
           setOverlay: () => {},
         }
       },
@@ -574,10 +670,24 @@ async function verifyClipboardCopy(): Promise<void> {
 
   const backup = await clipboard.read()
   const backupTypes = backup.map((item) => item.types.join('+'))
+  const backupUserTypes = userContentTypes(backup)
   check(
     '拷贝冒烟开工前能读到剪贴板原状（类型清单见 detail）',
     backup.every((item) => Array.isArray(item.types)),
     backupTypes,
+  )
+
+  // 立刻把内容取成内存 Blob，而不是等收尾再取。clipboard.read() 发回的是惰性句柄，取数要回到
+  // 粘贴板；本函数中途会往剪贴板写探针图，换过 owner 之后旧内容就可能再也取不回来（实测：
+  // 收尾时才重建，文本条目直接取数失败，于是还原成了清空，把用户的剪贴板吃掉）。
+  const snapshot = await rebuildClipboardItems(backup)
+  const backedUpItems = backup.filter((item) =>
+    item.types.some((type) => !type.startsWith('electron application/')),
+  ).length
+  check(
+    '开工前的用户内容已就地取成内存快照（晚取会取不回来）',
+    snapshot.length === backedUpItems,
+    { snapshot: snapshot.length, expected: backedUpItems },
   )
 
   try {
@@ -631,20 +741,110 @@ async function verifyClipboardCopy(): Promise<void> {
     )
   } finally {
     // 还原用户现场：无论断言成败都要把开工前的内容写回去，不能让验收动作留在用户的剪贴板里。
-    const rebuilt = await rebuildClipboardItems(backup)
-    if (rebuilt.length > 0) {
-      await clipboard.write(rebuilt)
+    if (snapshot.length > 0) {
+      await clipboard.write(snapshot)
     } else {
       clipboard.clear()
     }
   }
 
-  const restored = (await clipboard.read()).map((item) => item.types.join('+'))
+  // 只对用户内容负责：读到的值比最近一次写滞后一拍，故等到投影稳定再判定。
+  let restoredUserTypes = userContentTypes(await clipboard.read())
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (restoredUserTypes.join('|') === backupUserTypes.join('|')) {
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    restoredUserTypes = userContentTypes(await clipboard.read())
+  }
   check(
-    '剪贴板内容已还原成开工前的样子',
-    restored.join('|') === backupTypes.join('|'),
-    { before: backupTypes, after: restored },
+    '剪贴板里的用户内容已还原成开工前的样子',
+    restoredUserTypes.join('|') === backupUserTypes.join('|'),
+    {
+      before: backupUserTypes,
+      after: restoredUserTypes,
+      rawBefore: backupTypes,
+      rawAfter: (await clipboard.read()).map((item) => item.types.join('+')),
+    },
   )
+}
+
+/**
+ * 合成拷贝的真链路：真窗口渲染 → 按 DIP 抓一块 → 从 PNG 里读出那一块的颜色。
+ *
+ * 用自建的隐藏窗口而不是建窗工厂产出的覆盖窗：工厂在帧注入后会 showInactive，
+ * 那会在用户桌面上弹出全屏置顶层。这里要验的是 capturePage 的尺度语义与「抓得到渲染内容」，
+ * 隐藏窗口同样成立；抓取的实现本身走的是生产同一条 `captureRegionPng`。
+ */
+async function verifyCompositeCapture(): Promise<void> {
+  const display = screen.getAllDisplays()[0]
+  check('合成拷贝冒烟需要一块显示器', display !== undefined)
+  if (display === undefined) {
+    return
+  }
+
+  const region = { x: 40, y: 30, width: 200, height: 150 }
+  const window = new BrowserWindow(freezeWindowOptions(displayLikeOf(display)))
+  try {
+    await window.loadFile(overlayPath)
+    // 探针盒是渲染层内容：它出现在抓取结果里，就等于证明了合成拷贝抓的是渲染结果而非原始帧。
+    // 盒刻意比抓取区域小并落在区域正中，这样同一张图里既有「盒内」也有「盒外」可比。
+    await window.webContents.executeJavaScript(
+      `(() => {
+         const box = document.createElement('div')
+         box.setAttribute('data-testid', 'composite-probe')
+         box.style.cssText = 'position:fixed;left:100px;top:80px;width:80px;height:60px;background:#ff0000'
+         document.body.appendChild(box)
+       })()`,
+    )
+
+    // 首帧合成之前抓到的会是一张「尺寸对、像素全透明」的空表面，按契约那就是「抓不到像素」。
+    // 故轮询到真拿到像素为止，而不是睡一个固定时长赌首绘已经完成。
+    let png: Uint8Array | null = null
+    for (let attempt = 0; attempt < 120 && png === null; attempt += 1) {
+      png = await captureRegionPng(window, region)
+      if (png === null) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    }
+    check('合成抓取拿到了 PNG 字节', png !== null && png.length > 0, png?.length ?? null)
+
+    if (png !== null) {
+      const image = nativeImage.createFromBuffer(Buffer.from(png))
+      const size = image.getSize()
+      const expected = {
+        width: region.width * display.scaleFactor,
+        height: region.height * display.scaleFactor,
+      }
+      check(
+        '抓到的是这块区域的物理像素（DIP 乘缩放比），不是整屏也不是 DIP 尺寸',
+        Math.abs(size.width - expected.width) <= 2 && Math.abs(size.height - expected.height) <= 2,
+        { size, expected, scaleFactor: display.scaleFactor },
+      )
+
+      const bitmap = image.toBitmap()
+      const at = (x: number, y: number) => {
+        const offset = (y * size.width + x) * 4
+        return {
+          b: bitmap[offset] ?? -1,
+          g: bitmap[offset + 1] ?? -1,
+          r: bitmap[offset + 2] ?? -1,
+          a: bitmap[offset + 3] ?? -1,
+        }
+      }
+      const center = at(Math.floor(size.width / 2), Math.floor(size.height / 2))
+      check('抓到的中心像素就是探针盒的红（渲染内容进了抓取结果）', near(center, { r: 255, g: 0, b: 0 }), center)
+
+      const outside = at(2, 2)
+      check('盒外像素不是探针红（抓的确实是这一块而不是整屏）', !near(outside, { r: 255, g: 0, b: 0 }), outside)
+    }
+  } catch (error) {
+    check('合成抓取冒烟未抛异常', false, error instanceof Error ? error.message : String(error))
+  } finally {
+    if (!window.isDestroyed()) {
+      window.destroy()
+    }
+  }
 }
 
 /**
@@ -653,6 +853,8 @@ async function verifyClipboardCopy(): Promise<void> {
  * clipboard.write 明确拒绝 write 一个来自 clipboard.read 的 ClipboardItem，必须新建；
  * 少数平台类型（文件承诺一类）不给可序列化载荷，只能略过，那一部分格式在还原后会丢，
  * 这是把验收动作压在用户现场上必须认下的代价。
+ *
+ * 必须在动剪贴板之前调用：它要把每个条目的载荷取进内存，而句柄的取数依赖当时那份粘贴板内容。
  */
 async function rebuildClipboardItems(
   items: readonly Electron.ClipboardItem[],
@@ -661,6 +863,10 @@ async function rebuildClipboardItems(
   for (const item of items) {
     const entries: Record<string, Blob | Electron.ClipboardBookmark> = {}
     for (const type of item.types) {
+      if (type.startsWith('electron application/')) {
+        // 系统粘贴板条目，见 userContentTypes：写不回去，整条只剩这类类型时由上层 clear。
+        continue
+      }
       try {
         entries[type] = await item.getType(type)
       } catch {
@@ -952,9 +1158,122 @@ async function verifySystemWindows(): Promise<void> {
   check('双路合成同时产出边缘与系统窗口候选', sources.join(',') === 'edge,window', sources)
 }
 
+/**
+ * 设置页的真链路：真 BrowserWindow + 真 preload/contextBridge + 真 ipcMain.handle + 真落盘。
+ *
+ * 单测对 preload 这一层是结构性盲区——它跨的是进程边界，替身里没有真 ipcRenderer，也验不出
+ * preload 是否因 ESM/CJS 形态加载失败。这里用一个临时配置目录，绝不碰用户真实的设置文件。
+ */
+async function verifySettingsRoundTrip(): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'treen-settings-smoke-'))
+  const store = createSettingsStore({ userDataDir: dir })
+  registerSettingsIpc({ ipc: ipcMain, store })
+
+  let window: BrowserWindow | null = null
+  try {
+    window = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        preload: settingsPreloadPath,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+    await window.loadFile(settingsPath)
+
+    const bridgeType = await window.webContents.executeJavaScript('typeof window.treenSettings')
+    check('设置窗 preload 暴露了 treenSettings 桥', bridgeType === 'object', bridgeType)
+
+    const initial = (await window.webContents.executeJavaScript('window.treenSettings.get()')) as
+      | { translateText?: unknown; translateCharts?: unknown }
+      | null
+    check(
+      '经真实 IPC 读回默认设置（两开关默认开）',
+      initial !== null && initial.translateText === true && initial.translateCharts === true,
+      initial,
+    )
+
+    const saved = (await window.webContents.executeJavaScript(
+      'window.treenSettings.set({ translateCharts: false })',
+    )) as { translateText?: unknown; translateCharts?: unknown } | null
+    check(
+      '经真实 IPC 写回并返回落盘结果',
+      saved !== null && saved.translateText === true && saved.translateCharts === false,
+      saved,
+    )
+
+    const readOnDisk = (): Record<string, unknown> | null =>
+      existsSync(join(dir, 'settings.json'))
+        ? (JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as Record<string, unknown>)
+        : null
+    check(
+      '经桥写回后设置落到配置目录下的 settings.json',
+      await waitFor(() => readOnDisk()?.translateCharts === false),
+      readOnDisk(),
+    )
+
+    // 再走一遍用户真正的路径：勾控件 → change → 页面 save() → 桥 → 落盘 → 回填控件并报已保存。
+    // 单测里那个替身桥只证明了 html 脚本自身的逻辑，唯有真 preload 在场才能证明这条链路整条通。
+    await window.webContents.executeJavaScript(
+      '(() => { const el = document.getElementById("setting-translate-charts"); el.checked = true; el.dispatchEvent(new Event("change")); })()',
+    )
+    check(
+      '界面勾选经真链路写回并落盘',
+      await waitFor(() => readOnDisk()?.translateCharts === true),
+      readOnDisk(),
+    )
+
+    let status = ''
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      status = (await window.webContents.executeJavaScript(
+        'document.getElementById("settings-status").textContent',
+      )) as string
+      if (status === '已保存' || status.startsWith('保存失败')) {
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    check('保存完成后状态行报告已保存', status === '已保存', status)
+
+    const controlChecked = await window.webContents.executeJavaScript(
+      'document.getElementById("setting-translate-charts").checked',
+    )
+    check('保存成功后控件停在勾选态', controlChecked === true, controlChecked)
+
+    // 热键走的是另一条路：keydown → 页面算出 accelerator → 桥 → 落盘。这条链只在真浏览器里成立。
+    const hotkeyShown = await window.webContents.executeJavaScript(
+      'document.getElementById("setting-freeze-accelerator").value',
+    )
+    check(
+      '设置页把服务端的热键回填进热键框',
+      typeof hotkeyShown === 'string' && hotkeyShown !== '',
+      hotkeyShown,
+    )
+
+    await window.webContents.executeJavaScript(
+      'document.getElementById("setting-freeze-accelerator").dispatchEvent(new KeyboardEvent("keydown", { key: "j", metaKey: true, altKey: true }))',
+    )
+    check(
+      '按下组合键后新热键落到 settings.json',
+      await waitFor(() => readOnDisk()?.freezeAccelerator === 'Command+Alt+J'),
+      readOnDisk()?.freezeAccelerator,
+    )
+  } catch (error) {
+    check('设置页往返冒烟未抛异常', false, error instanceof Error ? error.message : String(error))
+  } finally {
+    if (window !== null && !window.isDestroyed()) {
+      window.destroy()
+    }
+    ipcMain.removeHandler(IPC_CHANNELS.settingsGet)
+    ipcMain.removeHandler(IPC_CHANNELS.settingsSet)
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 app.whenReady().then(async () => {
   try {
     await verifyShortcuts()
+    await verifyHotkeyReassignment()
     const window = await verifyOverlayWindow()
     await verifyCandidateHighlight(window)
     await verifySelectionLock(window)
@@ -963,6 +1282,8 @@ app.whenReady().then(async () => {
     await verifySystemWindows()
     await verifyFreezeShortcutLifecycle()
     await verifyClipboardCopy()
+    await verifyCompositeCapture()
+    await verifySettingsRoundTrip()
     if (window !== null && !window.isDestroyed()) {
       window.destroy()
     }

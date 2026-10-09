@@ -40,10 +40,19 @@ export interface TranslateSelectionDeps {
  * 可选传入 displayId 指定在哪块屏触发：锁定轮询在触发时就已知是哪块屏，不能再退化到
  * 「光标在哪译哪」（多屏各有锁定时那是错的屏）。不传则维持按光标推断的旧语义。
  */
+export interface TranslateSelectionOptions {
+  /**
+   * 是否真的翻译（默认 true）。关闭时跳过外部翻译调用但照做 OCR——图表覆盖只需要识别出的
+   * 源码行与屏幕落点，不需要译文，省下一次按次计费的外部调用。
+   * 关闭时产出的块 translation 为空串；覆盖计划侧不应把这种空块当译文渲染（见 compose 的 texts 开关）。
+   */
+  translateText?: boolean
+}
+
 export function createTranslateSelection(deps: TranslateSelectionDeps) {
   const readOcr = createOcrReader({ recognize: deps.recognize })
 
-  return async (displayId?: number): Promise<TranslateOutcome> => {
+  return async (displayId?: number, options: TranslateSelectionOptions = {}): Promise<TranslateOutcome> => {
     const sources = await deps.readSources()
     const target =
       displayId === undefined
@@ -66,14 +75,19 @@ export function createTranslateSelection(deps: TranslateSelectionDeps) {
     }
 
     const texts = blocks.map((block) => block.text)
-    const translations = await deps.translate(texts)
+    const translateText = options.translateText !== false
+    const translations = translateText ? await deps.translate(texts) : texts.map(() => '')
     if (translations.length !== texts.length) {
       // 翻译实现已保证等长（长度失配会在其内部降级逐条）；到这里仍不等即为注入实现违约，
       // 宁可抛错让上层看见，也不交出与原文错位的译文。
       throw new Error(`译文条数 ${translations.length} 与原文 ${texts.length} 不一致`)
     }
 
-    deps.logger?.info(`显示器 ${source.display.id} 选区翻译完成：${blocks.length} 段`)
+    deps.logger?.info(
+      translateText
+        ? `显示器 ${source.display.id} 选区翻译完成：${blocks.length} 段`
+        : `显示器 ${source.display.id} 选区已识别 ${blocks.length} 段（文本翻译已关闭，仅取源码供图表使用）`,
+    )
     return {
       kind: 'translated',
       displayId: source.display.id,

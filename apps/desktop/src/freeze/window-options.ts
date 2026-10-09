@@ -1,7 +1,12 @@
 import type { BrowserWindowConstructorOptions } from 'electron'
 import type { DisplayLike } from './geometry'
 
-/** 默认触发热键；S9 接入设置项后由用户配置覆盖，此处是单一默认来源。 */
+/**
+ * 默认触发热键：用户没写下自己的键位时用这个。
+ *
+ * 热键能被设置项覆盖，但「默认键位」只在这里写一次，设置层的默认值由装配处从这里取，
+ * 免得多出一份会漂移的副本。
+ */
 export const DEFAULT_FREEZE_ACCELERATOR = 'CommandOrControl+Shift+X'
 
 /**
@@ -18,6 +23,14 @@ export const FREEZE_EXIT_ACCELERATOR = 'Escape'
  * 用户正看着冻结覆盖层的那段时间里，不会影响其它应用。
  */
 export const FREEZE_COPY_ACCELERATOR = 'CommandOrControl+C'
+
+/**
+ * 冻结期拷贝合成图的键：抓覆盖窗当前渲染结果，译文与图都在里面。
+ *
+ * 与 `FREEZE_COPY_ACCELERATOR` 并存而不是顶替：后者拷的是原始截屏帧（不含任何覆盖内容），
+ * 两者是不同产物，把合成拷贝悄悄挂到旧键上会改掉原键的语义。同样只在冻结期注册。
+ */
+export const FREEZE_COMPOSITE_COPY_ACCELERATOR = 'CommandOrControl+Shift+C'
 
 /**
  * 冻结覆盖窗的构造选项，一屏一窗。

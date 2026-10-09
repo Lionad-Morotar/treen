@@ -164,4 +164,22 @@ describe('composeOverlayPlan：译文与图的覆盖计划装配', () => {
     expect(sources).toHaveLength(0)
     expect(plan.charts).toHaveLength(0)
   })
+
+  it('不注入渲染方即不产图表，也不做 mermaid 检测（省掉整段无用功）', async () => {
+    const plan = await composeOverlayPlan(scene(), REGION, {})
+
+    expect(plan.charts).toHaveLength(0)
+    // 图块让位逻辑随之消失，图区域的译文得以照常覆盖。
+    expect(plan.texts).toHaveLength(scene().length)
+  })
+
+  it('关闭译文（texts:false）时只出图，不产出任何译文盒', async () => {
+    const { render, sources } = renderStub()
+
+    const plan = await composeOverlayPlan(scene(), REGION, { render, texts: false })
+
+    expect(sources).toHaveLength(1)
+    expect(plan.charts).toHaveLength(1)
+    expect(plan.texts).toHaveLength(0)
+  })
 })

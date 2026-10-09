@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Treen 设置</title>
+    <style>
+      /* 与应用内其它界面同族：深底、冷色描边、等宽正文。设置页是常驻可读的界面，
+         不做覆盖层那种半透明——它背后没有冻结画面可透。 */
+      :root {
+        --treen-bg: #0b1016;
+        --treen-panel: #111923;
+        --treen-border: rgba(34, 184, 230, 0.28);
+        --treen-text: #cde7ff;
+        --treen-muted: #7d93a8;
+        --treen-accent: #22b8e6;
+        --treen-danger: #ff8a4c;
+        --treen-font: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+        background: var(--treen-bg);
+        color: var(--treen-text);
+        font-family: var(--treen-font);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      main {
+        max-width: 560px;
+        margin: 0 auto;
+        padding: 32px 24px 48px;
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 16px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .treen-subtitle {
+        margin: 0 0 24px;
+        color: var(--treen-muted);
+      }
+
+      section {
+        border: 1px solid var(--treen-border);
+        border-radius: 4px;
+        background: var(--treen-panel);
+        margin-bottom: 16px;
+        padding: 16px;
+      }
+
+      section h2 {
+        margin: 0 0 12px;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--treen-accent);
+      }
+
+      /* 一行一个设置项：左边标签 + 说明，右边控件。 */
+      .treen-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 8px 0;
+      }
+
+      .treen-row + .treen-row {
+        border-top: 1px dashed rgba(125, 147, 168, 0.2);
+      }
+
+      .treen-row-label strong {
+        display: block;
+        font-weight: 600;
+      }
+
+      .treen-row-label span {
+        color: var(--treen-muted);
+        font-size: 12px;
+      }
+
+      input[type='checkbox'] {
+        appearance: none;
+        width: 40px;
+        height: 22px;
+        border: 1px solid var(--treen-border);
+        border-radius: 11px;
+        background: transparent;
+        position: relative;
+        cursor: pointer;
+        flex: 0 0 auto;
+        transition: background-color 0.15s ease;
+      }
+
+      /* 滑块用伪元素画：勾选只改位置与颜色，不做盒模型变化，不产生 layout shift。 */
+      input[type='checkbox']::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--treen-muted);
+        transition: transform 0.15s ease, background-color 0.15s ease;
+      }
+
+      input[type='checkbox']:checked {
+        background: rgba(34, 184, 230, 0.18);
+        border-color: var(--treen-accent);
+      }
+
+      input[type='checkbox']:checked::after {
+        transform: translateX(18px);
+        background: var(--treen-accent);
+      }
+
+      /* 热键框：只读，键盘事件被捕获成组合键而不是文本输入。 */
+      .treen-row input[type='text'] {
+        width: 210px;
+        padding: 6px 10px;
+        border: 1px solid var(--treen-border);
+        border-radius: 4px;
+        background: rgba(34, 184, 230, 0.08);
+        color: var(--treen-text);
+        font-family: var(--treen-font);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-align: center;
+        cursor: pointer;
+        flex: 0 0 auto;
+      }
+
+      /* 聚焦只换边框色：底态已有等宽边框，切换不产生位移。 */
+      .treen-row input[type='text']:focus {
+        border-color: var(--treen-accent);
+        outline: none;
+      }
+
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 20px;
+        color: var(--treen-muted);
+      }
+
+      footer[data-kind='ok'] {
+        color: var(--treen-accent);
+      }
+
+      footer[data-kind='error'] {
+        color: var(--treen-danger);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <!-- 设置页头：说明本页的作用与生效方式 -->
+      <header>
+        <h1>Treen 设置</h1>
+        <p class="treen-subtitle">改动即时生效，无需重启应用。</p>
+      </header>
+
+      <!-- 翻译区块：文本与图表两个正交开关 -->
+      <section data-testid="settings-section-translation">
+        <h2>翻译</h2>
+        <div class="treen-row">
+          <label class="treen-row-label" for="setting-translate-text">
+            <strong>翻译文本</strong>
+            <span>识别选区文字并覆盖译文</span>
+          </label>
+          <input
+            id="setting-translate-text"
+            data-testid="settings-translate-text"
+            type="checkbox"
+            role="switch"
+          />
+        </div>
+        <div class="treen-row">
+          <label class="treen-row-label" for="setting-translate-charts">
+            <strong>翻译图表</strong>
+            <span>提取 mermaid 源码并渲染覆盖</span>
+          </label>
+          <input
+            id="setting-translate-charts"
+            data-testid="settings-translate-charts"
+            type="checkbox"
+            role="switch"
+          />
+        </div>
+      </section>
+
+      <!-- 冻结区块：触发热键 -->
+      <section data-testid="settings-section-freeze">
+        <h2>冻结</h2>
+        <div class="treen-row">
+          <label class="treen-row-label" for="setting-freeze-accelerator">
+            <strong>冻结热键</strong>
+            <span>点进来直接按组合键，需含 Command / Control / Alt 之一</span>
+          </label>
+          <input
+            id="setting-freeze-accelerator"
+            data-testid="settings-freeze-accelerator"
+            type="text"
+            readonly
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+      </section>
+
+      <!-- 保存状态行：读写失败必须可见，否则用户以为改好了 -->
+      <footer id="settings-status" data-testid="settings-status" data-kind="idle" role="status"></footer>
+    </main>
+
+    <script>
+      // 设置页的主进程桥由 preload（settings-preload.cjs）注入为 window.treenSettings。
+      // 页面本身不做任何持久化：只负责把控件状态与服务端值对齐、把改动以补丁送回。
+      ;(function () {
+        var bridge = window.treenSettings
+        var status = document.getElementById('settings-status')
+        var TEXT_FIELD = 'setting-translate-text'
+        var CHARTS_FIELD = 'setting-translate-charts'
+        var HOTKEY_FIELD = 'setting-freeze-accelerator'
+
+        // 修饰键本身的 keydown 不构成组合键，按到它们时什么都不做（等真正的那个键）。
+        var MODIFIER_KEYS = { Meta: true, Control: true, Alt: true, Shift: true, AltGraph: true }
+        // Electron accelerator 与 DOM key 不同名的键。空格与加号是最容易被漏掉的两个：
+        // 它们本身就是单字符，按字符直传会拼出 'Command+ ' 这种解析不了的串（'+' 还是修饰符分隔符）。
+        var KEY_ALIASES = {
+          ArrowUp: 'Up',
+          ArrowDown: 'Down',
+          ArrowLeft: 'Left',
+          ArrowRight: 'Right',
+          ' ': 'Space',
+          '+': 'Plus',
+        }
+        // 不合法时告诉用户为什么；只说「不可用」会让人不知道该怎么改。
+        var HOTKEY_HINTS = {
+          escape: 'Escape 是冻结态的退出键，换一个组合键',
+          'no-main-modifier': '组合键需要至少一个 Command / Control / Alt',
+          unknown: '这个键不能用作热键，换一个',
+        }
+        var FUNCTION_KEY = /^F([1-9]|1[0-9]|2[0-4])$/
+        var WORD_KEY = /^[A-Za-z]+$/
+
+        function byId(id) {
+          return document.getElementById(id)
+        }
+
+        /** 把 DOM 的 event.key 换成 Electron accelerator 认得的键名；认不出返回 null。 */
+        function keyName(event) {
+          var key = event.key
+          if (typeof key !== 'string' || key === '') {
+            return null
+          }
+          // 别名先于单字符分支：' ' 与 '+' 长度都是 1，走字符直传就再也到不了别名表。
+          if (Object.prototype.hasOwnProperty.call(KEY_ALIASES, key)) {
+            return KEY_ALIASES[key]
+          }
+          if (key.length === 1) {
+            return key.toUpperCase()
+          }
+          if (FUNCTION_KEY.test(key)) {
+            return key
+          }
+          // Home / End / PageUp 一类单词键名与 accelerator 同名，首字母大写即可。
+          return WORD_KEY.test(key) ? key.charAt(0).toUpperCase() + key.slice(1) : null
+        }
+
+        /**
+         * 由一次按键事件算出 accelerator；不构成合法组合键时给出原因。
+         *
+         * 区分原因是为了让调用方分清「静默忽略」与「提示用户」：只按下修饰键是组合键输入的
+         * 常态（先按 Command 再按 J），报错是噪音；其余几种要告诉用户为什么不行。
+         *
+         * 至少要有 Command/Control/Alt 之一：只带 Shift（甚至什么都不带）的键位一旦注册成全局热键，
+         * 会在所有应用里截走这个键。Escape 也排除，它是冻结态的退出键，绑成触发键会一按即退。
+         */
+        function parseAccelerator(event) {
+          if (MODIFIER_KEYS[event.key] === true) {
+            return { ok: false, reason: 'modifier' }
+          }
+          var name = keyName(event)
+          if (name === null) {
+            return { ok: false, reason: 'unknown' }
+          }
+          if (name === 'Escape') {
+            return { ok: false, reason: 'escape' }
+          }
+          if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+            return { ok: false, reason: 'no-main-modifier' }
+          }
+          var parts = []
+          if (event.metaKey) parts.push('Command')
+          if (event.ctrlKey) parts.push('Control')
+          if (event.altKey) parts.push('Alt')
+          if (event.shiftKey) parts.push('Shift')
+          parts.push(name)
+          return { ok: true, accelerator: parts.join('+') }
+        }
+
+        function message(error) {
+          return error && error.message ? error.message : String(error)
+        }
+
+        function setStatus(text, kind) {
+          status.textContent = text
+          status.setAttribute('data-kind', kind)
+        }
+
+        /** 用服务端返回值回填控件：写入可能被归一（如字段回落默认），以落盘结果为准。 */
+        function apply(settings) {
+          if (!settings || typeof settings !== 'object') {
+            return
+          }
+          byId(TEXT_FIELD).checked = settings.translateText === true
+          byId(CHARTS_FIELD).checked = settings.translateCharts === true
+          if (typeof settings.freezeAccelerator === 'string') {
+            byId(HOTKEY_FIELD).value = settings.freezeAccelerator
+          }
+        }
+
+        function load() {
+          if (!bridge) {
+            setStatus('设置桥不可用：本页需在 Treen 应用内打开', 'error')
+            return Promise.resolve()
+          }
+          setStatus('读取中…', 'idle')
+          return Promise.resolve()
+            .then(function () {
+              return bridge.get()
+            })
+            .then(function (settings) {
+              apply(settings)
+              setStatus('', 'idle')
+            })
+            .catch(function (error) {
+              setStatus('读取设置失败：' + message(error), 'error')
+            })
+        }
+
+        function save(patch) {
+          if (!bridge) {
+            return Promise.resolve()
+          }
+          setStatus('保存中…', 'idle')
+          return Promise.resolve()
+            .then(function () {
+              return bridge.set(patch)
+            })
+            .then(function (settings) {
+              apply(settings)
+              setStatus('已保存', 'ok')
+            })
+            .catch(function (error) {
+              // 先把控件退回服务端真实状态，再落错误提示：load 成功会清空状态行，
+              // 若先提示后 reload，用户只会看到提示一闪而过。
+              return load().then(function () {
+                setStatus('保存失败：' + message(error), 'error')
+              })
+            })
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+          byId(TEXT_FIELD).addEventListener('change', function (event) {
+            save({ translateText: event.target.checked })
+          })
+          byId(CHARTS_FIELD).addEventListener('change', function (event) {
+            save({ translateCharts: event.target.checked })
+          })
+          byId(HOTKEY_FIELD).addEventListener('keydown', function (event) {
+            // 只读框本来不会吞按键，但方向键/空格会滚动页面，故一律拦下。
+            event.preventDefault()
+            // 按住不放会以键盘重复频率持续派发，只认第一次按下，免得反复落盘。
+            if (event.repeat) {
+              return
+            }
+            var parsed = parseAccelerator(event)
+            if (parsed.reason === 'modifier') {
+              // 组合键输入过程中的常态，什么都不做。
+              return
+            }
+            if (!parsed.ok) {
+              setStatus(HOTKEY_HINTS[parsed.reason], 'error')
+              return
+            }
+            save({ freezeAccelerator: parsed.accelerator })
+          })
+          load()
+        })
+      })()
+    </script>
+  </body>
+</html>
