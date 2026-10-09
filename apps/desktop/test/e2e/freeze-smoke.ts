@@ -20,7 +20,7 @@ import { ShortcutManager } from '../../src/freeze/shortcuts'
 import { createFreezeController } from '../../src/freeze/controller'
 import { DEFAULT_FREEZE_ACCELERATOR, freezeWindowOptions } from '../../src/freeze/window-options'
 import { captureRegionPng, readLockedRegion } from '../../src/freeze/electron-adapters'
-import { createSelectionCopier } from '../../src/selection/selection'
+import { createSelectionCopier, type CopyOutcome } from '../../src/selection/selection'
 import { frameCropWriter } from '../../src/selection/electron-clipboard'
 import type { SelectionSource } from '../../src/freeze/controller'
 import type { DisplayLike } from '../../src/freeze/geometry'
@@ -590,7 +590,7 @@ async function verifyFreezeShortcutLifecycle(): Promise<void> {
     },
     shortcuts,
     copyAccelerator: 'CommandOrControl+Shift+C',
-    copySelection: () => {},
+    copySelection: { trigger: () => {}, invalidate: () => {} },
   })
 
   check('触发热键注册进真实快捷键表', controller.start() && globalShortcut.isRegistered(DEFAULT_FREEZE_ACCELERATOR))
@@ -696,7 +696,7 @@ async function verifyClipboardCopy(): Promise<void> {
       writeCrop: frameCropWriter(),
     })
 
-    const outcome = await copier()
+    const outcome = await copier.trigger()
     check(
       '锁定选区按帧位图比例换算成像素矩形',
       JSON.stringify(outcome) ===
@@ -727,7 +727,7 @@ async function verifyClipboardCopy(): Promise<void> {
       readSources: async (): Promise<readonly SelectionSource[]> => [{ display, frame, locked: null }],
       writeCrop: frameCropWriter(),
     })
-    const wholeOutcome = await whole()
+    const wholeOutcome = (await whole.trigger()) as CopyOutcome
     check(
       '未锁定时拷整幅原始帧',
       wholeOutcome.kind === 'copied' && !wholeOutcome.fromLock,

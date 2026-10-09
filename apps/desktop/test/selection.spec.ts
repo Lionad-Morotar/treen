@@ -115,7 +115,7 @@ describe('createSelectionCopier', () => {
     const { copier, writeCrop } = harness([source(primary, LOCKED)])
 
     // 主屏 DIP 800x600，帧位图 1600x1200：比值 2，锁定矩形等比放大一倍。
-    const outcome = await copier()
+    const outcome = await copier.trigger()
 
     expect(outcome).toEqual({
       kind: 'copied',
@@ -134,7 +134,7 @@ describe('createSelectionCopier', () => {
   it('未锁定时裁整幅：像素矩形覆盖整个帧位图', async () => {
     const { copier, writeCrop } = harness([source(primary, null)])
 
-    const outcome = await copier()
+    const outcome = await copier.trigger()
 
     expect(outcome).toEqual({
       kind: 'copied',
@@ -149,7 +149,7 @@ describe('createSelectionCopier', () => {
     // 副屏 1000x800 DIP，帧位图只给了 500x400（thumbnailSize 是全屏共用上界时被缩小的一侧）。
     const { copier } = harness([source(secondary, { x: 100, y: 100, width: 200, height: 100 }, { width: 500, height: 400 })])
 
-    const outcome = await copier()
+    const outcome = await copier.trigger()
 
     expect(outcome).toMatchObject({ pixelRect: { x: 50, y: 50, width: 100, height: 50 } })
   })
@@ -157,7 +157,7 @@ describe('createSelectionCopier', () => {
   it('没有覆盖窗时不写剪贴板', async () => {
     const { copier, writeCrop, warn } = harness([])
 
-    expect(await copier()).toEqual({ kind: 'skipped', reason: 'no-window' })
+    expect(await copier.trigger()).toEqual({ kind: 'skipped', reason: 'no-window' })
     expect(writeCrop).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalled()
   })
@@ -165,7 +165,7 @@ describe('createSelectionCopier', () => {
   it('帧位图尺寸未知时不猜，如实跳过', async () => {
     const { copier, writeCrop, warn } = harness([source(primary, LOCKED, null)])
 
-    expect(await copier()).toEqual({ kind: 'skipped', reason: 'frame-size-unknown' })
+    expect(await copier.trigger()).toEqual({ kind: 'skipped', reason: 'frame-size-unknown' })
     expect(writeCrop).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalled()
   })
@@ -173,7 +173,7 @@ describe('createSelectionCopier', () => {
   it('选区完全落在帧外时不裁出空图', async () => {
     const { copier, writeCrop } = harness([source(primary, { x: 900, y: 700, width: 100, height: 100 })])
 
-    expect(await copier()).toEqual({ kind: 'skipped', reason: 'no-target' })
+    expect(await copier.trigger()).toEqual({ kind: 'skipped', reason: 'no-target' })
     expect(writeCrop).not.toHaveBeenCalled()
   })
 
@@ -183,7 +183,7 @@ describe('createSelectionCopier', () => {
       source(secondary, { x: 5, y: 5, width: 50, height: 50 }),
     ])
 
-    await copier()
+    await copier.trigger()
 
     expect(warn.mock.calls.some(([message]) => String(message).includes('多块'))).toBe(true)
   })
@@ -192,6 +192,124 @@ describe('createSelectionCopier', () => {
     const { copier, writeCrop } = harness([source(primary, LOCKED)])
     writeCrop.mockRejectedValueOnce(new Error('剪贴板写入失败'))
 
-    await expect(copier()).rejects.toThrow(/剪贴板写入失败/)
+    await expect(copier.trigger()).rejects.toThrow(/剪贴板写入失败/)
+  })
+})
+
+describe('createSelectionCopier：连按两次的代次闸门', () => {
+  /** 交错用例的 fake 需要手动放行时序；与 region-action 过代次用例同构（pending 收 resolve）。 */
+  const silentLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  /** 写闸排队点前有读素材的微任务，等两轮走到位再放行。 */
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+
+  it('第一轮的素材在第二轮已发起后才读到，第一轮不落地', async () => {
+    const pending: Array<(sources: readonly SelectionSource[]) => void> = []
+    const writeCrop = vi.fn<(frame: FreezeFrame, rect: Rect) => Promise<void>>(async () => {})
+    const copier = createSelectionCopier({
+      readSources: () => new Promise((resolve) => pending.push(resolve)),
+      writeCrop,
+      logger: silentLogger,
+    })
+
+    const first = copier.trigger()
+    const second = copier.trigger()
+    const sources = [source(primary, LOCKED)]
+
+    pending[0]?.(sources)
+    expect(await first).toEqual({ kind: 'skipped', reason: 'superseded' })
+
+    // 后发起的那轮照常落地，且只有它写了一次剪贴板。
+    pending[1]?.(sources)
+    const secondOutcome = await second
+    expect(secondOutcome).toEqual({
+      kind: 'copied',
+      displayId: 1,
+      fromLock: true,
+      pixelRect: { x: 80, y: 60, width: 400, height: 300 },
+    })
+    expect(writeCrop).toHaveBeenCalledTimes(1)
+  })
+
+  it('写盘经串行闸排队：完成序钉死为发起序，最终落地的是后一轮的素材', async () => {
+    const firstWriteGates: Array<() => void> = []
+    const writeOrder: number[] = []
+    const writeCrop = vi.fn<(frame: FreezeFrame, rect: Rect) => Promise<void>>()
+    writeCrop.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          writeOrder.push(1)
+          firstWriteGates.push(resolve)
+        }),
+    )
+    writeCrop.mockImplementationOnce(async () => {
+      writeOrder.push(2)
+    })
+    const copier = createSelectionCopier({
+      readSources: async () => [source(primary, LOCKED)],
+      writeCrop,
+      logger: silentLogger,
+    })
+
+    const first = copier.trigger()
+    await vi.waitFor(() => expect(writeOrder).toEqual([1]))
+
+    // 第二轮在第一轮写完前发起：素材段并发推进，但写盘必须等在串行闸里。
+    const second = copier.trigger()
+    await settle()
+    expect(writeOrder).toEqual([1])
+
+    firstWriteGates[0]?.()
+    expect(await first).toMatchObject({ kind: 'copied' })
+    expect(await second).toMatchObject({ kind: 'copied' })
+    // 写完成序与发起序一致：后一轮最后写，剪贴板最终是后一轮的素材。
+    expect(writeOrder).toEqual([1, 2])
+  })
+
+  it('出队时已过期的轮不再写盘：invalidate 后排队中的写直接跳过', async () => {
+    const firstWriteGates: Array<() => void> = []
+    const writeCrop = vi.fn<(frame: FreezeFrame, rect: Rect) => Promise<void>>()
+    writeCrop.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          firstWriteGates.push(resolve)
+        }),
+    )
+    writeCrop.mockResolvedValueOnce(undefined)
+    const copier = createSelectionCopier({
+      readSources: async () => [source(primary, LOCKED)],
+      writeCrop,
+      logger: silentLogger,
+    })
+
+    const first = copier.trigger()
+    await vi.waitFor(() => expect(writeCrop).toHaveBeenCalledTimes(1))
+
+    const second = copier.trigger()
+    copier.invalidate()
+
+    // 第一轮已过出队点、写入在途（无法撤回），如实报 copied；第二轮轮到写时已过期，跳过。
+    firstWriteGates[0]?.()
+    expect(await first).toMatchObject({ kind: 'copied' })
+    expect(await second).toEqual({ kind: 'skipped', reason: 'superseded' })
+    expect(writeCrop).toHaveBeenCalledTimes(1)
+  })
+
+  it('invalidate 作废在途轮：退出冻结后素材不再写剪贴板', async () => {
+    const pending: Array<(sources: readonly SelectionSource[]) => void> = []
+    const writeCrop = vi.fn<(frame: FreezeFrame, rect: Rect) => Promise<void>>(async () => {})
+    const copier = createSelectionCopier({
+      readSources: () => new Promise((resolve) => pending.push(resolve)),
+      writeCrop,
+      logger: silentLogger,
+    })
+
+    const first = copier.trigger()
+    copier.invalidate()
+
+    pending[0]?.([source(primary, LOCKED)])
+    expect(await first).toEqual({ kind: 'skipped', reason: 'superseded' })
+    expect(writeCrop).not.toHaveBeenCalled()
   })
 })

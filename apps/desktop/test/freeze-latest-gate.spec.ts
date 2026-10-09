@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createLatestGate } from '../src/overlay/latest-gate'
+import { createLatestGate } from '../src/freeze/latest-gate'
 
 describe('createLatestGate：只让最新一次触发的结果落地', () => {
   it('先取的号在第二次触发后即过期', () => {
@@ -31,5 +31,25 @@ describe('createLatestGate：只让最新一次触发的结果落地', () => {
     expect(tokens).toEqual([...tokens].sort((a, b) => a - b))
     expect(new Set(tokens).size).toBe(tokens.length)
     expect(gate.isCurrent(tokens[2] as number)).toBe(true)
+  })
+
+  it('invalidate 作废全部在途号', () => {
+    const gate = createLatestGate()
+    const first = gate.begin()
+    const second = gate.begin()
+
+    gate.invalidate()
+    expect(gate.isCurrent(first)).toBe(false)
+    expect(gate.isCurrent(second)).toBe(false)
+  })
+
+  it('invalidate 后新 begin 照常发号，链路可以重新工作', () => {
+    const gate = createLatestGate()
+    const stale = gate.begin()
+    gate.invalidate()
+
+    const fresh = gate.begin()
+    expect(gate.isCurrent(stale)).toBe(false)
+    expect(gate.isCurrent(fresh)).toBe(true)
   })
 })

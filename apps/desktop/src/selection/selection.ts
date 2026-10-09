@@ -5,7 +5,13 @@ import {
   type Point,
   type Rect,
 } from '../freeze/geometry'
-import type { FreezeFrame, FreezeLogger, SelectionSource } from '../freeze/controller'
+import { createLatestGate } from '../freeze/latest-gate'
+import type {
+  FreezeAction,
+  FreezeFrame,
+  FreezeLogger,
+  SelectionSource,
+} from '../freeze/controller'
 
 /**
  * 选区拷贝的纯逻辑：挑出这次该拷哪一屏的哪一块，把显示器相对 DIP 换算成帧位图像素，
@@ -25,7 +31,10 @@ export interface CopyTarget {
 
 export type CopyOutcome =
   | { kind: 'copied'; displayId: number; fromLock: boolean; pixelRect: Rect }
-  | { kind: 'skipped'; reason: 'no-window' | 'frame-size-unknown' | 'no-target' }
+  | {
+      kind: 'skipped'
+      reason: 'no-window' | 'frame-size-unknown' | 'no-target' | 'superseded'
+    }
 
 /** 一屏整幅的显示器相对 DIP 矩形。 */
 export function wholeDisplayRect(display: DisplayLike): Rect {
@@ -103,12 +112,27 @@ export interface SelectionCopierDeps {
 }
 
 /**
- * 冻结期的「拷贝原始截图」动作用它。返回结果只为让调用方与测试能断言发生了什么，
- * 失败不在这里吞掉：交给调用方决定呈现方式（控制器把它收进日志）。
+ * 冻结期的「拷贝原始截图」动作用它。返回 FreezeAction：trigger 发起一轮，invalidate
+ * 作废在途轮（冻结退出时由控制器调用）。
+ *
+ * 连按两次时两条链路并发，先发起的可能后落地，有两道防线：代次闸门按发起次序发号，
+ * 素材读完核对一次号码，过期即丢弃；写盘经串行闸落地（完成序钉死为发起序），轮到
+ * 写时再核对一次，在途期间被取代的写直接跳过、不碰剪贴板。串行闸只排写盘这一步，
+ * 素材读取与换算仍并发，第二轮不必等第一轮的整条链路。结果只为让调用方与测试能
+ * 断言发生了什么，失败不在这里吞掉：交给调用方决定呈现方式（控制器把它收进日志）。
  */
-export function createSelectionCopier(deps: SelectionCopierDeps): () => Promise<CopyOutcome> {
-  return async () => {
+export function createSelectionCopier(deps: SelectionCopierDeps): FreezeAction {
+  const gate = createLatestGate()
+  // 写盘串行闸：剪贴板写入按完成序生效，并发写完成序颠倒时旧素材会覆盖新素材，
+  // 故全部写入排队执行。失败不断队（队尾吞掉 rejection），只把错误交给当轮调用方。
+  let writeTurn: Promise<boolean> = Promise.resolve(true)
+
+  async function run(token: number): Promise<CopyOutcome> {
     const sources = await deps.readSources()
+    if (!gate.isCurrent(token)) {
+      deps.logger?.info('拷贝跳过：已被更晚的一次拷贝取代')
+      return { kind: 'skipped', reason: 'superseded' }
+    }
     const target = pickCopyTarget(sources, deps.pointer?.())
     if (target === null) {
       deps.logger?.warn('拷贝跳过：冻结态没有可用的覆盖窗')
@@ -132,11 +156,36 @@ export function createSelectionCopier(deps: SelectionCopierDeps): () => Promise<
       return { kind: 'skipped', reason: 'no-target' }
     }
 
-    await deps.writeCrop(source.frame, pixelRect)
+    // 写盘进串行闸排队；轮到这一轮时再核对一次号码，在途期间被取代的写直接跳过。
+    const turn = writeTurn.then(async (): Promise<boolean> => {
+      if (!gate.isCurrent(token)) {
+        return false
+      }
+      await deps.writeCrop(source.frame, pixelRect)
+      return true
+    })
+    writeTurn = turn.then(
+      () => true,
+      () => true,
+    )
+    const written = await turn
+    if (!written) {
+      deps.logger?.info('拷贝跳过：已被更晚的一次拷贝取代')
+      return { kind: 'skipped', reason: 'superseded' }
+    }
     deps.logger?.info(
       `已拷贝${fromLock ? '锁定选区' : '整屏'}：显示器 ${source.display.id} ` +
         `像素 ${pixelRect.width}×${pixelRect.height}`,
     )
     return { kind: 'copied', displayId: source.display.id, fromLock, pixelRect }
+  }
+
+  return {
+    trigger(): Promise<CopyOutcome> {
+      return run(gate.begin())
+    },
+    invalidate(): void {
+      gate.invalidate()
+    },
   }
 }

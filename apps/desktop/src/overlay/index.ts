@@ -3,5 +3,6 @@
 export * from './layout'
 export * from './chart-region'
 export * from './compose'
-export * from './latest-gate'
+// latest-gate 语义上不专属覆盖域，已上移冻结域；此处保留再导出，装配侧 import 不变。
+export * from '../freeze/latest-gate'
 export * from './region-action'
