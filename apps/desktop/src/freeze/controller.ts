@@ -102,6 +102,20 @@ export interface FreezeLogger {
   error(message: string): void
 }
 
+/**
+ * 冻结期可选动作（拷贝两类）的统一形状：trigger 发起一轮，invalidate 作废全部在途轮。
+ *
+ * invalidate 存在的理由：拷贝是多 await 链路，退出冻结（Escape、触发键第二下、dispose）
+ * 落在 await 之间时，在途那一轮若不作废，会拿着退出前读到的素材继续写剪贴板——绕过
+ * frozen 守卫。exit 是全部退出路径的汇合点，由控制器在此统一作废，动作方无须感知冻结态。
+ */
+export interface FreezeAction {
+  /** 发起一轮；返回值不被控制器消费（全局快捷键没有等待方），测试可直接 await。 */
+  trigger(): unknown
+  /** 作废该动作的全部在途轮；退出冻结时由控制器调用。 */
+  invalidate(): void
+}
+
 export interface FreezeControllerDeps {
   /** 当前全部显示器，含负坐标副屏 */
   listDisplays(): DisplayLike[]
@@ -121,14 +135,14 @@ export interface FreezeControllerDeps {
    * 返回值不被等待（全局快捷键没有等待方），同步抛错与 Promise 拒绝都会收进日志：
    * 拷贝失败不该把冻结态整个拆掉，但也不能静默无反应。
    */
-  copySelection?: () => unknown
+  copySelection?: FreezeAction
   /** 合成拷贝键；缺省用内置默认 */
   compositeAccelerator?: string
   /**
    * 冻结期把覆盖窗当前渲染结果（译文与图）拷进剪贴板。缺省即不注册该键。
    * 成败处置与 `copySelection` 同：只落日志，不拆冻结态。
    */
-  copyComposite?: () => unknown
+  copyComposite?: FreezeAction
   /**
    * 冻结期轮询到某屏出现新锁定时触发翻译。缺省即不轮询——冻结只铺画面与出口。
    *
@@ -209,7 +223,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
    */
   function registerActionShortcut(
     accelerator: string,
-    action: (() => unknown) | undefined,
+    action: FreezeAction | undefined,
     label: string,
   ): void {
     if (action === undefined) {
@@ -218,7 +232,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     const registered = deps.shortcuts.register(accelerator, () => {
       // handler 不能是 async：全局快捷键不消费返回值，异常只会变成未处理拒绝。
       void Promise.resolve()
-        .then(() => action())
+        .then(() => action.trigger())
         .catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error)
           deps.logger?.warn(`${label}失败：${message}`)
@@ -329,6 +343,10 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       return
     }
     stopLockWatch()
+    // 在途拷贝轮此刻必须作废：它们的素材读自退出前的覆盖窗，放任落地就是让已拆掉的
+    // 冻结态往剪贴板写东西。dispose 也经这里收口，不需要单独再作废一次。
+    deps.copySelection?.invalidate()
+    deps.copyComposite?.invalidate()
     releaseShortcuts()
     closeAll(created)
     created = []

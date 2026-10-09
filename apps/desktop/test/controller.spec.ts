@@ -139,6 +139,7 @@ interface HarnessOptions {
   acceptAccelerator?: (accelerator: string) => boolean
   capture?: () => Promise<FreezeFrame[]>
   buildCandidates?: (display: DisplayLike, frame: FreezeFrame) => Promise<readonly Candidate[]>
+  /** 拷贝动作的 trigger 本体；harness 把它包成 FreezeAction 并记录 invalidate 调用 */
   copySelection?: () => unknown
   copyComposite?: () => unknown
   onRegionLocked?: (target: RegionLockTarget) => unknown
@@ -154,6 +155,10 @@ function createHarness(options: HarnessOptions = {}) {
   const info = vi.fn()
   const error = vi.fn()
   const reportError = vi.fn()
+  /** 各拷贝动作的 invalidate 被调记录；键是动作名。退出作废语义由它断言。 */
+  const invalidated: string[] = []
+  const asAction = (name: string, trigger?: () => unknown) =>
+    trigger === undefined ? undefined : { trigger, invalidate: () => invalidated.push(name) }
   const controller = createFreezeController({
     listDisplays: () => displays,
     captureFrames,
@@ -162,8 +167,8 @@ function createHarness(options: HarnessOptions = {}) {
     triggerAccelerator: TRIGGER,
     exitAccelerator: ESCAPE,
     copyAccelerator: COPY,
-    copySelection: options.copySelection,
-    copyComposite: options.copyComposite,
+    copySelection: asAction('copySelection', options.copySelection),
+    copyComposite: asAction('copyComposite', options.copyComposite),
     onRegionLocked: options.onRegionLocked,
     timers: options.timers,
     pointOfInterest: () => options.pointer ?? { x: 10, y: 10 },
@@ -171,7 +176,18 @@ function createHarness(options: HarnessOptions = {}) {
     reportError,
     logger: { warn, info, error },
   })
-  return { controller, shortcuts, windows, captureFrames, warn, info, error, reportError, displays }
+  return {
+    controller,
+    shortcuts,
+    windows,
+    captureFrames,
+    warn,
+    info,
+    error,
+    reportError,
+    displays,
+    invalidated,
+  }
 }
 
 describe('freeze controller: start', () => {
@@ -538,6 +554,30 @@ describe('freeze controller: 冻结期拷贝键', () => {
     harness.controller.exit()
 
     expect(harness.shortcuts.handlers.has(COPY)).toBe(false)
+  })
+
+  it('退出冻结时作废两类拷贝的全部在途轮，dispose 经 exit 同样生效', async () => {
+    const withBoth = createHarness({ copySelection: vi.fn(), copyComposite: vi.fn() })
+
+    await withBoth.controller.enter()
+    withBoth.controller.exit()
+
+    expect(withBoth.invalidated).toEqual(['copySelection', 'copyComposite'])
+
+    // dispose 是应用退出路径，同样要作废（它内部走的就是 exit，这里钉住不回退）。
+    const disposed = createHarness({ copySelection: vi.fn(), copyComposite: vi.fn() })
+    await disposed.controller.enter()
+    disposed.controller.dispose()
+
+    expect(disposed.invalidated).toEqual(['copySelection', 'copyComposite'])
+  })
+
+  it('未冻结时 exit 不触发作废：没有在途轮就没有可作废的东西', async () => {
+    const harness = createHarness({ copySelection: vi.fn(), copyComposite: vi.fn() })
+
+    harness.controller.exit()
+
+    expect(harness.invalidated).toEqual([])
   })
 
   it('缺省不给拷贝键，冻结仍然成立', async () => {

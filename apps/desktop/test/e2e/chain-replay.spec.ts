@@ -356,7 +356,7 @@ describe.skipIf(!FIXTURE_AVAILABLE)('端到端回放：截图 → OCR → 翻译
         croppedRect = rect
       },
     })
-    const copyOutcome = await copier()
+    const copyOutcome = await copier.trigger()
     expect(copyOutcome).toEqual({ kind: 'copied', displayId: DISPLAY_ID, fromLock: true, pixelRect: region })
     expect(croppedRect).toEqual(region)
 
@@ -369,7 +369,7 @@ describe.skipIf(!FIXTURE_AVAILABLE)('端到端回放：截图 → OCR → 翻译
         written = bytes
       },
     })
-    const compositeOutcome = await composite()
+    const compositeOutcome = await composite.trigger()
     expect(compositeOutcome).toEqual({ kind: 'copied', displayId: DISPLAY_ID, fromLock: true, region })
     expect(written).toEqual(compositePng)
 

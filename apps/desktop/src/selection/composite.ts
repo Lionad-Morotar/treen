@@ -1,4 +1,5 @@
-import type { FreezeLogger, SelectionSource } from '../freeze/controller'
+import { createLatestGate } from '../freeze/latest-gate'
+import type { FreezeAction, FreezeLogger, SelectionSource } from '../freeze/controller'
 import type { Point, Rect } from '../freeze/geometry'
 import { pickCopyTarget } from './selection'
 
@@ -14,7 +15,10 @@ import { pickCopyTarget } from './selection'
 
 export type CompositeOutcome =
   | { kind: 'copied'; displayId: number; fromLock: boolean; region: Rect }
-  | { kind: 'skipped'; reason: 'no-window' | 'no-target' | 'no-capture' }
+  | {
+      kind: 'skipped'
+      reason: 'no-window' | 'no-target' | 'no-capture' | 'superseded'
+    }
 
 export interface CompositeCopierDeps {
   /** 收集各屏当前的选区素材（锁定选区由各覆盖窗的渲染层拉取而来） */
@@ -28,14 +32,23 @@ export interface CompositeCopierDeps {
 }
 
 /**
- * 冻结期的「拷贝合成图」动作用它。结果只为让调用方与测试能断言发生了什么，
- * 失败不在这里吞掉：交给调用方决定呈现方式（控制器把它收进日志）。
+ * 冻结期的「拷贝合成图」动作用它。返回 FreezeAction：trigger 发起一轮，invalidate
+ * 作废在途轮（冻结退出时由控制器调用）。
+ *
+ * await 点比原始截图拷贝多（读素材、抓取、写盘三个），每两个之间都要核对一次号码，
+ * 只核对一次挡不住插进来的那一轮。抓取落空（null）先于 no-capture 判代次：该轮已被
+ * 更晚一轮取代时，读到的素材本身已作废，报 superseded 而不是 no-capture——两者对
+ * 调用方含义不同，前者是「有更新的轮次在跑」，后者是「这一屏真的没有渲染结果」。
  */
-export function createCompositeCopier(
-  deps: CompositeCopierDeps,
-): () => Promise<CompositeOutcome> {
-  return async () => {
+export function createCompositeCopier(deps: CompositeCopierDeps): FreezeAction {
+  const gate = createLatestGate()
+
+  async function run(token: number): Promise<CompositeOutcome> {
     const sources = await deps.readSources()
+    if (!gate.isCurrent(token)) {
+      deps.logger?.info('合成拷贝跳过：已被更晚的一次合成拷贝取代')
+      return { kind: 'skipped', reason: 'superseded' }
+    }
     const target = pickCopyTarget(sources, deps.pointer?.())
     if (target === null) {
       deps.logger?.warn('合成拷贝跳过：冻结态没有可用的覆盖窗')
@@ -49,6 +62,10 @@ export function createCompositeCopier(
     }
 
     const png = await deps.capture(source, region)
+    if (!gate.isCurrent(token)) {
+      deps.logger?.info('合成拷贝跳过：已被更晚的一次合成拷贝取代')
+      return { kind: 'skipped', reason: 'superseded' }
+    }
     if (png === null) {
       // 抓不到像素说明这一屏当时没有可用的渲染结果；写一张空图进剪贴板比什么都不写更糟。
       deps.logger?.warn(`合成拷贝跳过：显示器 ${source.display.id} 抓不到渲染结果`)
@@ -56,10 +73,24 @@ export function createCompositeCopier(
     }
 
     await deps.writePng(png)
+    if (!gate.isCurrent(token)) {
+      // 写已发生且无法撤回；如实报告过期（同原始截图拷贝的写序竞态残余）。
+      deps.logger?.info('合成拷贝完成但已被更晚的一次取代，视为未拷贝')
+      return { kind: 'skipped', reason: 'superseded' }
+    }
     deps.logger?.info(
       `已拷贝${fromLock ? '锁定选区的' : '整屏的'}合成画面：显示器 ${source.display.id} ` +
         `${region.width}×${region.height}（DIP）`,
     )
     return { kind: 'copied', displayId: source.display.id, fromLock, region }
+  }
+
+  return {
+    trigger(): Promise<CompositeOutcome> {
+      return run(gate.begin())
+    },
+    invalidate(): void {
+      gate.invalidate()
+    },
   }
 }

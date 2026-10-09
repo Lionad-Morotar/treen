@@ -5,7 +5,13 @@ import {
   type Point,
   type Rect,
 } from '../freeze/geometry'
-import type { FreezeFrame, FreezeLogger, SelectionSource } from '../freeze/controller'
+import { createLatestGate } from '../freeze/latest-gate'
+import type {
+  FreezeAction,
+  FreezeFrame,
+  FreezeLogger,
+  SelectionSource,
+} from '../freeze/controller'
 
 /**
  * 选区拷贝的纯逻辑：挑出这次该拷哪一屏的哪一块，把显示器相对 DIP 换算成帧位图像素，
@@ -25,7 +31,10 @@ export interface CopyTarget {
 
 export type CopyOutcome =
   | { kind: 'copied'; displayId: number; fromLock: boolean; pixelRect: Rect }
-  | { kind: 'skipped'; reason: 'no-window' | 'frame-size-unknown' | 'no-target' }
+  | {
+      kind: 'skipped'
+      reason: 'no-window' | 'frame-size-unknown' | 'no-target' | 'superseded'
+    }
 
 /** 一屏整幅的显示器相对 DIP 矩形。 */
 export function wholeDisplayRect(display: DisplayLike): Rect {
@@ -106,9 +115,24 @@ export interface SelectionCopierDeps {
  * 冻结期的「拷贝原始截图」动作用它。返回结果只为让调用方与测试能断言发生了什么，
  * 失败不在这里吞掉：交给调用方决定呈现方式（控制器把它收进日志）。
  */
-export function createSelectionCopier(deps: SelectionCopierDeps): () => Promise<CopyOutcome> {
-  return async () => {
+/**
+ * 冻结期的「拷贝原始截图」动作用它。返回 FreezeAction：trigger 发起一轮，invalidate
+ * 作废在途轮（冻结退出时由控制器调用）。
+ *
+ * 连按两次时两条链路并发，先发起的可能后落地——闸门按发起次序发号，素材读完与写盘
+ * 完成后各核对一次号码，过期即丢弃。写盘后再核对是因为 writeCrop 的 await 期间第二轮
+ * 可能已经开始甚至完成，只核对一次挡不住插进来的那一轮。结果只为让调用方与测试能断言
+ * 发生了什么，失败不在这里吞掉：交给调用方决定呈现方式（控制器把它收进日志）。
+ */
+export function createSelectionCopier(deps: SelectionCopierDeps): FreezeAction {
+  const gate = createLatestGate()
+
+  async function run(token: number): Promise<CopyOutcome> {
     const sources = await deps.readSources()
+    if (!gate.isCurrent(token)) {
+      deps.logger?.info('拷贝跳过：已被更晚的一次拷贝取代')
+      return { kind: 'skipped', reason: 'superseded' }
+    }
     const target = pickCopyTarget(sources, deps.pointer?.())
     if (target === null) {
       deps.logger?.warn('拷贝跳过：冻结态没有可用的覆盖窗')
@@ -133,10 +157,26 @@ export function createSelectionCopier(deps: SelectionCopierDeps): () => Promise<
     }
 
     await deps.writeCrop(source.frame, pixelRect)
+    if (!gate.isCurrent(token)) {
+      // 写已发生且无法撤回；如实报告过期，别让调用方把这一轮当成有效拷贝。
+      // 残余竞态：两轮写的完成序颠倒时剪贴板最终是旧素材，彻底解需适配层串行化，
+      // 纯逻辑层只能保证不谎报结果。
+      deps.logger?.info('拷贝完成但已被更晚的一次拷贝取代，视为未拷贝')
+      return { kind: 'skipped', reason: 'superseded' }
+    }
     deps.logger?.info(
       `已拷贝${fromLock ? '锁定选区' : '整屏'}：显示器 ${source.display.id} ` +
         `像素 ${pixelRect.width}×${pixelRect.height}`,
     )
     return { kind: 'copied', displayId: source.display.id, fromLock, pixelRect }
+  }
+
+  return {
+    trigger(): Promise<CopyOutcome> {
+      return run(gate.begin())
+    },
+    invalidate(): void {
+      gate.invalidate()
+    },
   }
 }

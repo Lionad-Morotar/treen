@@ -1,9 +1,9 @@
 import type { TreenSettings } from '@treen/shared'
 import type { FreezeLogger, RegionLockTarget } from '../freeze/controller'
+import type { LatestGate } from '../freeze/latest-gate'
 import type { Rect } from '../freeze/geometry'
 import type { TranslateOutcome, TranslatedBlock } from '../translation/link'
 import type { OverlayPlan } from './layout'
-import type { LatestGate } from './latest-gate'
 
 /**
  * 「锁定一块区域就翻译并覆盖回屏幕」的动作装配（纯逻辑）。

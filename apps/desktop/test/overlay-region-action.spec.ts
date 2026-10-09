@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createLatestGate } from '../src/overlay/latest-gate'
+import { createLatestGate } from '../src/freeze/latest-gate'
 import {
   createRegionLockAction,
   type OverlayPlanOptions,
