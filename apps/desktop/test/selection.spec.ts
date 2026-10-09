@@ -199,6 +199,10 @@ describe('createSelectionCopier', () => {
 describe('createSelectionCopier：连按两次的代次闸门', () => {
   /** 交错用例的 fake 需要手动放行时序；与 region-action 过代次用例同构（pending 收 resolve）。 */
   const silentLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  /** 写闸排队点前有读素材的微任务，等两轮走到位再放行。 */
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setImmediate(resolve))
+  }
 
   it('第一轮的素材在第二轮已发起后才读到，第一轮不落地', async () => {
     const pending: Array<(sources: readonly SelectionSource[]) => void> = []
@@ -228,7 +232,42 @@ describe('createSelectionCopier：连按两次的代次闸门', () => {
     expect(writeCrop).toHaveBeenCalledTimes(1)
   })
 
-  it('写盘在途期间被更晚一轮取代时，写完成也不算数', async () => {
+  it('写盘经串行闸排队：完成序钉死为发起序，最终落地的是后一轮的素材', async () => {
+    const firstWriteGates: Array<() => void> = []
+    const writeOrder: number[] = []
+    const writeCrop = vi.fn<(frame: FreezeFrame, rect: Rect) => Promise<void>>()
+    writeCrop.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          writeOrder.push(1)
+          firstWriteGates.push(resolve)
+        }),
+    )
+    writeCrop.mockImplementationOnce(async () => {
+      writeOrder.push(2)
+    })
+    const copier = createSelectionCopier({
+      readSources: async () => [source(primary, LOCKED)],
+      writeCrop,
+      logger: silentLogger,
+    })
+
+    const first = copier.trigger()
+    await vi.waitFor(() => expect(writeOrder).toEqual([1]))
+
+    // 第二轮在第一轮写完前发起：素材段并发推进，但写盘必须等在串行闸里。
+    const second = copier.trigger()
+    await settle()
+    expect(writeOrder).toEqual([1])
+
+    firstWriteGates[0]?.()
+    expect(await first).toMatchObject({ kind: 'copied' })
+    expect(await second).toMatchObject({ kind: 'copied' })
+    // 写完成序与发起序一致：后一轮最后写，剪贴板最终是后一轮的素材。
+    expect(writeOrder).toEqual([1, 2])
+  })
+
+  it('出队时已过期的轮不再写盘：invalidate 后排队中的写直接跳过', async () => {
     const firstWriteGates: Array<() => void> = []
     const writeCrop = vi.fn<(frame: FreezeFrame, rect: Rect) => Promise<void>>()
     writeCrop.mockImplementationOnce(
@@ -248,11 +287,13 @@ describe('createSelectionCopier：连按两次的代次闸门', () => {
     await vi.waitFor(() => expect(writeCrop).toHaveBeenCalledTimes(1))
 
     const second = copier.trigger()
-    expect(await second).toMatchObject({ kind: 'copied' })
+    copier.invalidate()
 
-    // 第一轮的写最后才完成：写已发生（纯逻辑层无法撤回），但结果必须如实报 superseded。
+    // 第一轮已过出队点、写入在途（无法撤回），如实报 copied；第二轮轮到写时已过期，跳过。
     firstWriteGates[0]?.()
-    expect(await first).toEqual({ kind: 'skipped', reason: 'superseded' })
+    expect(await first).toMatchObject({ kind: 'copied' })
+    expect(await second).toEqual({ kind: 'skipped', reason: 'superseded' })
+    expect(writeCrop).toHaveBeenCalledTimes(1)
   })
 
   it('invalidate 作废在途轮：退出冻结后素材不再写剪贴板', async () => {

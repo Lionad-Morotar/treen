@@ -35,13 +35,16 @@ export interface CompositeCopierDeps {
  * 冻结期的「拷贝合成图」动作用它。返回 FreezeAction：trigger 发起一轮，invalidate
  * 作废在途轮（冻结退出时由控制器调用）。
  *
- * await 点比原始截图拷贝多（读素材、抓取、写盘三个），每两个之间都要核对一次号码，
- * 只核对一次挡不住插进来的那一轮。抓取落空（null）先于 no-capture 判代次：该轮已被
+ * await 点比原始截图拷贝多（读素材、抓取、写盘三个），读素材与抓取完成后各核对一次
+ * 号码；写盘与原始截图拷贝共用同一形态的串行闸（完成序钉死为发起序），轮到写时再核对
+ * 一次，在途期间被取代的写直接跳过。抓取落空（null）先于 no-capture 判代次：该轮已被
  * 更晚一轮取代时，读到的素材本身已作废，报 superseded 而不是 no-capture——两者对
  * 调用方含义不同，前者是「有更新的轮次在跑」，后者是「这一屏真的没有渲染结果」。
  */
 export function createCompositeCopier(deps: CompositeCopierDeps): FreezeAction {
   const gate = createLatestGate()
+  // 写盘串行闸：同原始截图拷贝，防并发写的完成序颠倒。两路径各持一条链互不排队。
+  let writeTurn: Promise<boolean> = Promise.resolve(true)
 
   async function run(token: number): Promise<CompositeOutcome> {
     const sources = await deps.readSources()
@@ -72,10 +75,21 @@ export function createCompositeCopier(deps: CompositeCopierDeps): FreezeAction {
       return { kind: 'skipped', reason: 'no-capture' }
     }
 
-    await deps.writePng(png)
-    if (!gate.isCurrent(token)) {
-      // 写已发生且无法撤回；如实报告过期（同原始截图拷贝的写序竞态残余）。
-      deps.logger?.info('合成拷贝完成但已被更晚的一次取代，视为未拷贝')
+    // 写盘进串行闸排队；轮到这一轮时再核对一次号码，在途期间被取代的写直接跳过。
+    const turn = writeTurn.then(async (): Promise<boolean> => {
+      if (!gate.isCurrent(token)) {
+        return false
+      }
+      await deps.writePng(png)
+      return true
+    })
+    writeTurn = turn.then(
+      () => true,
+      () => true,
+    )
+    const written = await turn
+    if (!written) {
+      deps.logger?.info('合成拷贝跳过：已被更晚的一次合成拷贝取代')
       return { kind: 'skipped', reason: 'superseded' }
     }
     deps.logger?.info(

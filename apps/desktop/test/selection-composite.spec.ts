@@ -199,4 +199,35 @@ describe('createCompositeCopier：连按两次的代次闸门', () => {
     expect(await first).toEqual({ kind: 'skipped', reason: 'superseded' })
     expect(writePng).not.toHaveBeenCalled()
   })
+
+  it('写盘经串行闸排队且出队时判代次：被取代的轮轮到写时直接跳过', async () => {
+    const firstWriteGates: Array<() => void> = []
+    const writePng = vi.fn<() => Promise<void>>()
+    writePng.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          firstWriteGates.push(resolve)
+        }),
+    )
+    writePng.mockResolvedValueOnce(undefined)
+    const copier = createCompositeCopier({
+      readSources: async () => [source(primary, LOCKED)],
+      capture: async () => PNG,
+      writePng,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    })
+
+    const first = copier.trigger()
+    await vi.waitFor(() => expect(writePng).toHaveBeenCalledTimes(1))
+
+    // 第二轮全程即时完成素材与抓取，写盘排在第一轮之后；invalidate 后它出队即跳过。
+    const second = copier.trigger()
+    await settle()
+    copier.invalidate()
+
+    firstWriteGates[0]?.()
+    expect(await first).toMatchObject({ kind: 'copied' })
+    expect(await second).toEqual({ kind: 'skipped', reason: 'superseded' })
+    expect(writePng).toHaveBeenCalledTimes(1)
+  })
 })
