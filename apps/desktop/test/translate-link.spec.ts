@@ -86,4 +86,20 @@ describe('createTranslateSelection', () => {
 
     await expect(action()).rejects.toThrow(/不一致/)
   })
+
+  it('关闭文本翻译时仍识别文字，但不下发翻译调用，块里译文为空串', async () => {
+    const { action, translate, info } = harness()
+
+    const outcome = await action(undefined, { translateText: false })
+
+    expect(translate).not.toHaveBeenCalled()
+    expect(outcome.kind).toBe('translated')
+    expect(outcome).toMatchObject({
+      blocks: [
+        { source: '上', translation: '', box: { x: 200, y: 70, width: 50, height: 25 } },
+        { source: '下', translation: '', box: { x: 120, y: 100, width: 50, height: 50 } },
+      ],
+    })
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('文本翻译已关闭'))
+  })
 })

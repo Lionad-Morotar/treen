@@ -16,6 +16,8 @@ describe('ipc contract', () => {
       'treen:freeze-screen',
       'treen:translate-selection',
       'treen:capture-composite',
+      'treen:settings-get',
+      'treen:settings-set',
     ])
   })
 

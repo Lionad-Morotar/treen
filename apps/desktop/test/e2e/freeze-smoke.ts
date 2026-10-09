@@ -1,8 +1,21 @@
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { deflateSync } from 'node:zlib'
 // ClipboardItem 在主进程不是全局量（那是渲染端的 Web API），必须从 electron 模块取。
-import { BrowserWindow, ClipboardItem, app, clipboard, globalShortcut, nativeImage, screen } from 'electron'
+import {
+  BrowserWindow,
+  ClipboardItem,
+  app,
+  clipboard,
+  globalShortcut,
+  ipcMain,
+  nativeImage,
+  screen,
+} from 'electron'
+import { IPC_CHANNELS } from '@treen/ipc'
+import { createSettingsStore } from '../../src/settings/store'
+import { registerSettingsIpc } from '../../src/settings/ipc'
 import { ShortcutManager } from '../../src/freeze/shortcuts'
 import { createFreezeController } from '../../src/freeze/controller'
 import { DEFAULT_FREEZE_ACCELERATOR, freezeWindowOptions } from '../../src/freeze/window-options'
@@ -56,8 +69,50 @@ function check(name: string, ok: boolean, detail?: unknown): void {
   checks.push({ name, ok, detail })
 }
 
+/**
+ * 轮询到条件成立为止，返回最终是否成立。
+ *
+ * 剪贴板与跨进程写入都不是同步生效的：`clipboard.read()` 是异步的，且观测到的值与最近一次
+ * `clipboard.write` 之间会错开一拍；设置页的写回也要经一个 IPC 往返才落盘。断言前直接读一次
+ * 会与这些异步过程赛跑，故统一走轮询。
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000, stepMs = 10): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, stepMs))
+  }
+  return predicate()
+}
+
+/**
+ * 把剪贴板内容投影成「每个条目的用户内容类型」。
+ *
+ * Electron 的 clipboard.read() 会把系统粘贴板条目一并读出来，冠以 `electron application/` 前缀
+ * （查找粘贴板，以及同一份内容在原生粘贴板上的别名格式）。它们不是用户内容：macOS 上只带这类类型的
+ * 写是空操作，还原时既写不回去，也不该拿它们当作「用户的剪贴板」参与比对。
+ *
+ * 投影保留条目边界（一项一项比对，而非拍平成一个列表）：条目被合并或拆分同样属于还原劣化，
+ * 拍平后长度对得上就会漏判。
+ */
+function userContentTypes(items: readonly Electron.ClipboardItem[]): string[] {
+  return items
+    .map((item) =>
+      item.types
+        .filter((type) => !type.startsWith('electron application/'))
+        .join('+'),
+    )
+    .filter((entry) => entry !== '')
+}
+
 // 打包产物落在 <desktop>/out/ 下，故 overlay.html 在其上一级；可用 env 覆盖。
 const overlayPath = process.env.TREEN_OVERLAY_PATH ?? resolve(__dirname, '..', 'overlay.html')
+
+// 设置页与其 preload 同处包根，随 overlay.html 一条规则。
+const settingsPath = resolve(__dirname, '..', 'settings.html')
+const settingsPreloadPath = resolve(__dirname, '..', 'settings-preload.cjs')
 
 const PROBE_PNG =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
@@ -574,6 +629,7 @@ async function verifyClipboardCopy(): Promise<void> {
 
   const backup = await clipboard.read()
   const backupTypes = backup.map((item) => item.types.join('+'))
+  const backupUserTypes = userContentTypes(backup)
   check(
     '拷贝冒烟开工前能读到剪贴板原状（类型清单见 detail）',
     backup.every((item) => Array.isArray(item.types)),
@@ -639,11 +695,24 @@ async function verifyClipboardCopy(): Promise<void> {
     }
   }
 
-  const restored = (await clipboard.read()).map((item) => item.types.join('+'))
+  // 只对用户内容负责：读到的值比最近一次写滞后一拍，故等到投影稳定再判定。
+  let restoredUserTypes = userContentTypes(await clipboard.read())
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (restoredUserTypes.join('|') === backupUserTypes.join('|')) {
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    restoredUserTypes = userContentTypes(await clipboard.read())
+  }
   check(
-    '剪贴板内容已还原成开工前的样子',
-    restored.join('|') === backupTypes.join('|'),
-    { before: backupTypes, after: restored },
+    '剪贴板里的用户内容已还原成开工前的样子',
+    restoredUserTypes.join('|') === backupUserTypes.join('|'),
+    {
+      before: backupUserTypes,
+      after: restoredUserTypes,
+      rawBefore: backupTypes,
+      rawAfter: (await clipboard.read()).map((item) => item.types.join('+')),
+    },
   )
 }
 
@@ -661,6 +730,10 @@ async function rebuildClipboardItems(
   for (const item of items) {
     const entries: Record<string, Blob | Electron.ClipboardBookmark> = {}
     for (const type of item.types) {
+      if (type.startsWith('electron application/')) {
+        // 系统粘贴板条目，见 userContentTypes：写不回去，整条只剩这类类型时由上层 clear。
+        continue
+      }
       try {
         entries[type] = await item.getType(type)
       } catch {
@@ -952,6 +1025,99 @@ async function verifySystemWindows(): Promise<void> {
   check('双路合成同时产出边缘与系统窗口候选', sources.join(',') === 'edge,window', sources)
 }
 
+/**
+ * 设置页的真链路：真 BrowserWindow + 真 preload/contextBridge + 真 ipcMain.handle + 真落盘。
+ *
+ * 单测对 preload 这一层是结构性盲区——它跨的是进程边界，替身里没有真 ipcRenderer，也验不出
+ * preload 是否因 ESM/CJS 形态加载失败。这里用一个临时配置目录，绝不碰用户真实的设置文件。
+ */
+async function verifySettingsRoundTrip(): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'treen-settings-smoke-'))
+  const store = createSettingsStore({ userDataDir: dir })
+  registerSettingsIpc({ ipc: ipcMain, store })
+
+  let window: BrowserWindow | null = null
+  try {
+    window = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        preload: settingsPreloadPath,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+    await window.loadFile(settingsPath)
+
+    const bridgeType = await window.webContents.executeJavaScript('typeof window.treenSettings')
+    check('设置窗 preload 暴露了 treenSettings 桥', bridgeType === 'object', bridgeType)
+
+    const initial = (await window.webContents.executeJavaScript('window.treenSettings.get()')) as
+      | { translateText?: unknown; translateCharts?: unknown }
+      | null
+    check(
+      '经真实 IPC 读回默认设置（两开关默认开）',
+      initial !== null && initial.translateText === true && initial.translateCharts === true,
+      initial,
+    )
+
+    const saved = (await window.webContents.executeJavaScript(
+      'window.treenSettings.set({ translateCharts: false })',
+    )) as { translateText?: unknown; translateCharts?: unknown } | null
+    check(
+      '经真实 IPC 写回并返回落盘结果',
+      saved !== null && saved.translateText === true && saved.translateCharts === false,
+      saved,
+    )
+
+    const readOnDisk = (): Record<string, unknown> | null =>
+      existsSync(join(dir, 'settings.json'))
+        ? (JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as Record<string, unknown>)
+        : null
+    check(
+      '经桥写回后设置落到配置目录下的 settings.json',
+      await waitFor(() => readOnDisk()?.translateCharts === false),
+      readOnDisk(),
+    )
+
+    // 再走一遍用户真正的路径：勾控件 → change → 页面 save() → 桥 → 落盘 → 回填控件并报已保存。
+    // 单测里那个替身桥只证明了 html 脚本自身的逻辑，唯有真 preload 在场才能证明这条链路整条通。
+    await window.webContents.executeJavaScript(
+      '(() => { const el = document.getElementById("setting-translate-charts"); el.checked = true; el.dispatchEvent(new Event("change")); })()',
+    )
+    check(
+      '界面勾选经真链路写回并落盘',
+      await waitFor(() => readOnDisk()?.translateCharts === true),
+      readOnDisk(),
+    )
+
+    let status = ''
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      status = (await window.webContents.executeJavaScript(
+        'document.getElementById("settings-status").textContent',
+      )) as string
+      if (status === '已保存' || status.startsWith('保存失败')) {
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    check('保存完成后状态行报告已保存', status === '已保存', status)
+
+    const controlChecked = await window.webContents.executeJavaScript(
+      'document.getElementById("setting-translate-charts").checked',
+    )
+    check('保存成功后控件停在勾选态', controlChecked === true, controlChecked)
+  } catch (error) {
+    check('设置页往返冒烟未抛异常', false, error instanceof Error ? error.message : String(error))
+  } finally {
+    if (window !== null && !window.isDestroyed()) {
+      window.destroy()
+    }
+    ipcMain.removeHandler(IPC_CHANNELS.settingsGet)
+    ipcMain.removeHandler(IPC_CHANNELS.settingsSet)
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 app.whenReady().then(async () => {
   try {
     await verifyShortcuts()
@@ -963,6 +1129,7 @@ app.whenReady().then(async () => {
     await verifySystemWindows()
     await verifyFreezeShortcutLifecycle()
     await verifyClipboardCopy()
+    await verifySettingsRoundTrip()
     if (window !== null && !window.isDestroyed()) {
       window.destroy()
     }

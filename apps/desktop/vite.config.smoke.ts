@@ -6,6 +6,11 @@ import { defineConfig } from 'vite'
 // 且不依赖渲染端；打成 CJS 免去 Electron ESM 主进程对具名导入的兼容性顾虑。
 // 复用仓内既有 vite，不引入打包器依赖。
 export default defineConfig({
+  // 与主进程构建同一处置：入口经 shared/env.ts 触到 import.meta，CJS 产物里没有真 import.meta，
+  // 显式声明空对象语义，让其守卫式回落到 __dirname。
+  define: {
+    'import.meta': '{}',
+  },
   build: {
     target: 'node22',
     outDir: 'out',

@@ -30,8 +30,14 @@ export interface OverlayBlock {
 }
 
 export interface ComposeOverlayDeps {
-  /** 送渲染站渲染一段 mermaid 源码；失败抛错 */
-  render(source: string): Promise<MermaidRenderResult>
+  /**
+   * 送渲染站渲染一段 mermaid 源码；失败抛错。
+   * 缺省即不产图表——「翻译图表」开关关闭时装配层就不注入它，比让 compose 再读一次开关更直白，
+   * 也省掉整段 mermaid 检测与网络往返。
+   */
+  render?(source: string): Promise<MermaidRenderResult>
+  /** 是否产出译文覆盖；缺省 true。关闭时仍照常检测图表（图不需要译文，只需源码文本）。 */
+  texts?: boolean
   logger?: { warn(message: string): void; info(message: string): void }
 }
 
@@ -56,19 +62,17 @@ function chartSourceCandidates(lines: readonly string[]): Array<{ source: string
   return candidates
 }
 
-export async function composeOverlayPlan(
-  blocks: readonly OverlayBlock[],
+/**
+ * 把选区里的 mermaid 候选逐个变成图表版位。渲染方由调用方给定——它缺席时整个函数不会被调用。
+ * 每个候选的取舍（几何求区域、区域裁剪源码、渲染站裁决、两种源码尝试）见文件头的说明。
+ */
+async function composeCharts(
+  observations: readonly PlacedObservation[],
+  sourceText: string,
   region: Rect,
-  deps: ComposeOverlayDeps,
-): Promise<OverlayPlan> {
-  const observations: PlacedObservation[] = blocks.map((block) => ({
-    text: block.source,
-    box: block.box,
-  }))
-  // 观察逐条以换行拼接即源码文本：一条观察一行，于是候选块的 startLine 就是它在 observations 里的下标，
-  // 成为几何扩张的锚点。这个对应关系是 chart-region 的前提，改变拼接方式必须同步改锚点求法。
-  const sourceText = observations.map((observation) => observation.text).join('\n')
-
+  render: (source: string) => Promise<MermaidRenderResult>,
+  logger?: { warn(message: string): void; info(message: string): void },
+): Promise<OverlayChartInput[]> {
   const charts: OverlayChartInput[] = []
   for (const candidate of detectMermaidBlocks(sourceText)) {
     const members = chartRegionMembers(observations, candidate.startLine, {
@@ -80,14 +84,14 @@ export async function composeOverlayPlan(
         index > candidate.startLine && isDiagramDeclaration(observation.text),
     })
     if (members.length === 0) {
-      deps.logger?.warn(`mermaid 候选在第 ${candidate.startLine} 行，但选区里求不到几何区域，跳过覆盖`)
+      logger?.warn(`mermaid 候选在第 ${candidate.startLine} 行，但选区里求不到几何区域，跳过覆盖`)
       continue
     }
 
     const lines = members.map((index) => observations[index]?.text ?? '')
     // 区域内一条连线行都没有，就没有图可言：渲染站会把裸声明还成一张空图，覆盖上去等于用空白盖住声明行。
     if (!lines.some(hasStructuralLine)) {
-      deps.logger?.warn(`mermaid 候选在第 ${candidate.startLine} 行，但几何区域内没有连线行，跳过覆盖`)
+      logger?.warn(`mermaid 候选在第 ${candidate.startLine} 行，但几何区域内没有连线行，跳过覆盖`)
       continue
     }
 
@@ -96,7 +100,7 @@ export async function composeOverlayPlan(
     let covered = members
     for (const attempt of chartSourceCandidates(lines)) {
       try {
-        rendered = await deps.render(attempt.source)
+        rendered = await render(attempt.source)
         covered = members.slice(0, attempt.lineCount)
         break
       } catch (error) {
@@ -104,7 +108,7 @@ export async function composeOverlayPlan(
       }
     }
     if (rendered === null) {
-      deps.logger?.warn(
+      logger?.warn(
         `mermaid 渲染失败，跳过该图：${failure instanceof Error ? failure.message : String(failure)}`,
       )
       continue
@@ -112,7 +116,7 @@ export async function composeOverlayPlan(
     if (covered.length < members.length) {
       // 裁剪成功说明几何区域把非图内容也框了进来（多半是图后紧跟的正文，空行又被 OCR 丢了）。
       // 这不影响这次覆盖，但它是 OCR 分块的系统性信号，值得留痕而不是悄悄吞掉。
-      deps.logger?.info(
+      logger?.info(
         `mermaid 候选在第 ${candidate.startLine} 行：区域末尾 ${members.length - covered.length} 行不是图内容，源码与版位已裁到末条连线行`,
       )
     }
@@ -124,10 +128,34 @@ export async function composeOverlayPlan(
     }
     charts.push({ svg: rendered.svg, intrinsic: rendered.intrinsic, box })
   }
+  return charts
+}
 
-  const texts: OverlayTextInput[] = blocks.map((block) => ({
-    translation: block.translation,
+export async function composeOverlayPlan(
+  blocks: readonly OverlayBlock[],
+  region: Rect,
+  deps: ComposeOverlayDeps,
+): Promise<OverlayPlan> {
+  const includeTexts = deps.texts !== false
+  const render = deps.render
+  const observations: PlacedObservation[] = blocks.map((block) => ({
+    text: block.source,
     box: block.box,
   }))
+  // 观察逐条以换行拼接即源码文本：一条观察一行，于是候选块的 startLine 就是它在 observations 里的下标，
+  // 成为几何扩张的锚点。这个对应关系是 chart-region 的前提，改变拼接方式必须同步改锚点求法。
+  const sourceText = observations.map((observation) => observation.text).join('\n')
+
+  // 没有渲染方就没有图可言；此时连检测都不必跑（检测只是为渲染挑料）。
+  const charts =
+    render === undefined
+      ? []
+      : await composeCharts(observations, sourceText, region, render, deps.logger)
+
+  // 关闭文本翻译时 blocks 的 translation 是空串（翻译步骤被跳过以省一次外部调用）；
+  // 那种空盒不该落到覆盖层上，故整批不产出译文——图表已独立成层，不受影响。
+  const texts: OverlayTextInput[] = includeTexts
+    ? blocks.map((block) => ({ translation: block.translation, box: block.box }))
+    : []
   return planOverlay({ texts, charts })
 }

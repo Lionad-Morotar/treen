@@ -10,6 +10,10 @@ export const IPC_CHANNELS = {
   freezeScreen: 'treen:freeze-screen',
   translateSelection: 'treen:translate-selection',
   captureComposite: 'treen:capture-composite',
+  /** 读当前用户设置（设置窗 → 主进程） */
+  settingsGet: 'treen:settings-get',
+  /** 以补丁写回用户设置，返回落盘后的完整设置（设置窗 → 主进程） */
+  settingsSet: 'treen:settings-set',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

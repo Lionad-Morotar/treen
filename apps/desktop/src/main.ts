@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { BrowserWindow, app, dialog } from 'electron'
+import { BrowserWindow, app, dialog, ipcMain } from 'electron'
 import { createLogger, readDeepSeekKey } from '@treen/shared'
 import {
   DEFAULT_FREEZE_ACCELERATOR,
@@ -25,18 +25,72 @@ import {
   createTranslateSelection,
   macOcrEngine,
 } from './translation'
-import { composeOverlayPlan, createLatestGate } from './overlay'
+import { composeOverlayPlan, createLatestGate, createRegionLockAction } from './overlay'
 import { createRenderSiteClient } from './render-site'
+import { createSettingsStore, registerSettingsIpc, type SettingsStore } from './settings'
 import { describeStartup } from './startup'
 
 const logger = createLogger('desktop')
 
 let freeze: FreezeController | null = null
 
+/**
+ * 主窗口即设置页：应用启动后常驻的界面只有设置，没有其它内容页。
+ *
+ * 设置页是普通窗（`electron .` 下文件从 app 根取，与 overlay.html 同处），因此可以用 preload
+ * 暴露一个窄桥；这与覆盖窗刻意不带 preload 的取舍不同——覆盖窗只需要主进程单向下发，
+ * 而设置页要主动读、主动写，桥是它的正常形态。
+ */
 function createMainWindow(): BrowserWindow {
-  const window = new BrowserWindow({ width: 1024, height: 720, show: false })
+  const window = new BrowserWindow({
+    width: 1024,
+    height: 720,
+    show: false,
+    webPreferences: {
+      // preload 必须是 .cjs：包体是 type:module，而 sandbox 渲染进程的 preload 不支持 ESM。
+      preload: join(app.getAppPath(), 'settings-preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
   window.once('ready-to-show', () => window.show())
+  void window.loadFile(join(app.getAppPath(), 'settings.html'))
   return window
+}
+
+/**
+ * 装配设置域：把设置文件的落点定在用户配置目录，并注册读写通道。
+ *
+ * 落点用 `app.getPath('userData')` 而非自拼 home 目录——打包态与多用户机上后者的目录布局不同，
+ * 自己拼会把配置写到系统约定之外的地方。
+ *
+ * 设置读不出来时弹一次提示：坏掉的设置不该让应用拒启（store 会退默认值继续跑），
+ * 但也不能静默——否则表现成「设置页改了没反应」，用户无从知道磁盘上那份文件根本没读进来。
+ * 读不缓存，回调会被反复触发，故这里只提示首次。
+ */
+function setupSettings(): SettingsStore {
+  let reported = false
+  const store = createSettingsStore({
+    userDataDir: app.getPath('userData'),
+    logger,
+    onReadFailure: (error) => {
+      if (reported) {
+        return
+      }
+      reported = true
+      void dialog.showMessageBox({
+        type: 'warning',
+        message: 'Treen 读不到设置文件，本次按默认设置运行',
+        detail: `${error.message}\n\n修复或删除该文件后重启即可恢复自定义设置。`,
+      })
+    },
+  })
+  registerSettingsIpc({ ipc: ipcMain, store, logger })
+  const current = store.read()
+  logger.info(
+    `设置已就绪：翻译文本${current.translateText ? '开' : '关'}、翻译图表${current.translateCharts ? '开' : '关'}`,
+  )
+  return store
 }
 
 /**
@@ -53,11 +107,13 @@ async function readOverlaySources(): Promise<readonly SelectionSource[]> {
  * 装配「点击一块区域就翻译并覆盖回屏幕」的动作。缺 DeepSeek 密钥时不给该动作：
  * 冻结与拷贝照常可用，而不是让一次配置缺失把整个冻结域拆掉。
  *
- * 链路：锁定触发 → OCR + 翻译 → 覆盖计划（译文版位 + mermaid 图版位）→ 注入该屏覆盖窗。
+ * 链路与门控都在 `overlay/region-action`（纯逻辑、可单测）里；这里只做依赖装配：
+ * 真实 OCR、翻译、渲染站客户端，以及「从设置读开关」与「覆盖窗列表按需现取」两处读取口。
  * mermaid 的校验即渲染：候选是否真是一张图由渲染站裁决，故主进程不必再背一份 mermaid + jsdom。
- * 渲染站不可达时图跳过、译文照出——一块图消失不该让整片译文一起失败。
  */
-function createRegionLockAction(): ((target: RegionLockTarget) => void) | undefined {
+function buildRegionLockAction(
+  settings: SettingsStore,
+): ((target: RegionLockTarget) => void) | undefined {
   if (readDeepSeekKey() === undefined) {
     logger.warn('未配置 DEEPSEEK_KEY，点击翻译不启用；冻结与拷贝不受影响')
     return undefined
@@ -70,49 +126,28 @@ function createRegionLockAction(): ((target: RegionLockTarget) => void) | undefi
     logger,
   })
   const render = createRenderSiteClient()
-  // 覆盖是整批替换，而这条链路（OCR + 外部翻译 + 渲染站）耗时不短：连着点两块区域会让两条
-  // 链路并发，先发起的可能后完成。闸门按发起次序发号，过期结果不落地。
-  const gate = createLatestGate()
 
-  async function translateAndOverlay(target: RegionLockTarget, token: number): Promise<void> {
-    const outcome = await translate(target.displayId)
-    if (!gate.isCurrent(token)) {
-      logger.info(`显示器 ${target.displayId} 的翻译已被更晚的一次点击取代，丢弃结果`)
-      return
-    }
-    if (outcome.kind !== 'translated') {
-      logger.info(`点击翻译跳过（${outcome.reason}）：显示器 ${target.displayId}`)
-      return
-    }
-    const handle = freeze?.windows().find((candidate) => candidate.displayId === outcome.displayId)
-    if (handle === undefined || handle.isDestroyed()) {
-      logger.warn(`显示器 ${outcome.displayId} 的覆盖窗已不在，放弃覆盖`)
-      return
-    }
-    const plan = await composeOverlayPlan(outcome.blocks, outcome.region, { render, logger })
-    if (!gate.isCurrent(token)) {
-      logger.info(`显示器 ${outcome.displayId} 的覆盖计划已过期，不注入`)
-      return
-    }
-    handle.setOverlay(plan)
-    logger.info(
-      `覆盖已注入：显示器 ${outcome.displayId}，${plan.texts.length} 段译文、${plan.charts.length} 张图`,
-    )
-  }
-
-  return (target) => {
-    const token = gate.begin()
-    void translateAndOverlay(target, token).catch((error: unknown) => {
-      logger.warn(`覆盖渲染失败：${error instanceof Error ? error.message : String(error)}`)
-    })
-  }
+  return createRegionLockAction({
+    readSettings: () => settings.read(),
+    translate,
+    compose: (blocks, region, options) =>
+      composeOverlayPlan(blocks, region, {
+        // 图表开关关闭时不注入渲染方：整段 mermaid 检测与渲染都不发生，而不是渲染完再丢弃。
+        render: options.charts ? render : undefined,
+        texts: options.texts,
+        logger,
+      }),
+    overlays: () => freeze?.windows() ?? [],
+    gate: createLatestGate(),
+    logger,
+  })
 }
 
 /**
  * 装配冻结域：真实 Electron 能力注入给纯逻辑控制器。
  * overlay.html 从 app 根取（`electron .` 下即包目录），不随构建产物走——它不进 main.js 的打包面。
  */
-function setupFreeze(): void {
+function setupFreeze(settings: SettingsStore): void {
   const copySelection = createSelectionCopier({
     readSources: readOverlaySources,
     writeCrop: frameCropWriter(logger),
@@ -128,7 +163,7 @@ function setupFreeze(): void {
     pointOfInterest,
     buildCandidates: createCandidateBuilder({ logger }),
     copySelection,
-    onRegionLocked: createRegionLockAction(),
+    onRegionLocked: buildRegionLockAction(settings),
     // 进入冻结失败（最常见的首跑原因是未授予屏幕录制权限）必须让用户看见，否则表现成「按了没反应」。
     reportError: (message) => {
       void dialog.showMessageBox({
@@ -149,8 +184,10 @@ function setupFreeze(): void {
 
 app.whenReady().then(() => {
   logger.info(describeStartup().logLine)
+  // 设置先于窗口与冻结就绪：设置页一打开就要经 IPC 读到它，冻结域也要从它取热键与开关。
+  const settings = setupSettings()
   createMainWindow()
-  setupFreeze()
+  setupFreeze(settings)
 })
 
 app.on('will-quit', () => {

@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Treen 设置</title>
+    <style>
+      /* 与应用内其它界面同族：深底、冷色描边、等宽正文。设置页是常驻可读的界面，
+         不做覆盖层那种半透明——它背后没有冻结画面可透。 */
+      :root {
+        --treen-bg: #0b1016;
+        --treen-panel: #111923;
+        --treen-border: rgba(34, 184, 230, 0.28);
+        --treen-text: #cde7ff;
+        --treen-muted: #7d93a8;
+        --treen-accent: #22b8e6;
+        --treen-danger: #ff8a4c;
+        --treen-font: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+        background: var(--treen-bg);
+        color: var(--treen-text);
+        font-family: var(--treen-font);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      main {
+        max-width: 560px;
+        margin: 0 auto;
+        padding: 32px 24px 48px;
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 16px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .treen-subtitle {
+        margin: 0 0 24px;
+        color: var(--treen-muted);
+      }
+
+      section {
+        border: 1px solid var(--treen-border);
+        border-radius: 4px;
+        background: var(--treen-panel);
+        margin-bottom: 16px;
+        padding: 16px;
+      }
+
+      section h2 {
+        margin: 0 0 12px;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--treen-accent);
+      }
+
+      /* 一行一个设置项：左边标签 + 说明，右边控件。 */
+      .treen-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 8px 0;
+      }
+
+      .treen-row + .treen-row {
+        border-top: 1px dashed rgba(125, 147, 168, 0.2);
+      }
+
+      .treen-row-label strong {
+        display: block;
+        font-weight: 600;
+      }
+
+      .treen-row-label span {
+        color: var(--treen-muted);
+        font-size: 12px;
+      }
+
+      input[type='checkbox'] {
+        appearance: none;
+        width: 40px;
+        height: 22px;
+        border: 1px solid var(--treen-border);
+        border-radius: 11px;
+        background: transparent;
+        position: relative;
+        cursor: pointer;
+        flex: 0 0 auto;
+        transition: background-color 0.15s ease;
+      }
+
+      /* 滑块用伪元素画：勾选只改位置与颜色，不做盒模型变化，不产生 layout shift。 */
+      input[type='checkbox']::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--treen-muted);
+        transition: transform 0.15s ease, background-color 0.15s ease;
+      }
+
+      input[type='checkbox']:checked {
+        background: rgba(34, 184, 230, 0.18);
+        border-color: var(--treen-accent);
+      }
+
+      input[type='checkbox']:checked::after {
+        transform: translateX(18px);
+        background: var(--treen-accent);
+      }
+
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 20px;
+        color: var(--treen-muted);
+      }
+
+      footer[data-kind='ok'] {
+        color: var(--treen-accent);
+      }
+
+      footer[data-kind='error'] {
+        color: var(--treen-danger);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <!-- 设置页头：说明本页的作用与生效方式 -->
+      <header>
+        <h1>Treen 设置</h1>
+        <p class="treen-subtitle">改动即时生效，无需重启应用。</p>
+      </header>
+
+      <!-- 翻译区块：文本与图表两个正交开关 -->
+      <section data-testid="settings-section-translation">
+        <h2>翻译</h2>
+        <div class="treen-row">
+          <label class="treen-row-label" for="setting-translate-text">
+            <strong>翻译文本</strong>
+            <span>识别选区文字并覆盖译文</span>
+          </label>
+          <input
+            id="setting-translate-text"
+            data-testid="settings-translate-text"
+            type="checkbox"
+            role="switch"
+          />
+        </div>
+        <div class="treen-row">
+          <label class="treen-row-label" for="setting-translate-charts">
+            <strong>翻译图表</strong>
+            <span>提取 mermaid 源码并渲染覆盖</span>
+          </label>
+          <input
+            id="setting-translate-charts"
+            data-testid="settings-translate-charts"
+            type="checkbox"
+            role="switch"
+          />
+        </div>
+      </section>
+
+      <!-- 保存状态行：读写失败必须可见，否则用户以为改好了 -->
+      <footer id="settings-status" data-testid="settings-status" data-kind="idle" role="status"></footer>
+    </main>
+
+    <script>
+      // 设置页的主进程桥由 preload（settings-preload.cjs）注入为 window.treenSettings。
+      // 页面本身不做任何持久化：只负责把控件状态与服务端值对齐、把改动以补丁送回。
+      ;(function () {
+        var bridge = window.treenSettings
+        var status = document.getElementById('settings-status')
+        var TEXT_FIELD = 'setting-translate-text'
+        var CHARTS_FIELD = 'setting-translate-charts'
+
+        function byId(id) {
+          return document.getElementById(id)
+        }
+
+        function message(error) {
+          return error && error.message ? error.message : String(error)
+        }
+
+        function setStatus(text, kind) {
+          status.textContent = text
+          status.setAttribute('data-kind', kind)
+        }
+
+        /** 用服务端返回值回填控件：写入可能被归一（如字段回落默认），以落盘结果为准。 */
+        function apply(settings) {
+          if (!settings || typeof settings !== 'object') {
+            return
+          }
+          byId(TEXT_FIELD).checked = settings.translateText === true
+          byId(CHARTS_FIELD).checked = settings.translateCharts === true
+        }
+
+        function load() {
+          if (!bridge) {
+            setStatus('设置桥不可用：本页需在 Treen 应用内打开', 'error')
+            return Promise.resolve()
+          }
+          setStatus('读取中…', 'idle')
+          return Promise.resolve()
+            .then(function () {
+              return bridge.get()
+            })
+            .then(function (settings) {
+              apply(settings)
+              setStatus('', 'idle')
+            })
+            .catch(function (error) {
+              setStatus('读取设置失败：' + message(error), 'error')
+            })
+        }
+
+        function save(patch) {
+          if (!bridge) {
+            return Promise.resolve()
+          }
+          setStatus('保存中…', 'idle')
+          return Promise.resolve()
+            .then(function () {
+              return bridge.set(patch)
+            })
+            .then(function (settings) {
+              apply(settings)
+              setStatus('已保存', 'ok')
+            })
+            .catch(function (error) {
+              // 先把控件退回服务端真实状态，再落错误提示：load 成功会清空状态行，
+              // 若先提示后 reload，用户只会看到提示一闪而过。
+              return load().then(function () {
+                setStatus('保存失败：' + message(error), 'error')
+              })
+            })
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+          byId(TEXT_FIELD).addEventListener('change', function (event) {
+            save({ translateText: event.target.checked })
+          })
+          byId(CHARTS_FIELD).addEventListener('change', function (event) {
+            save({ translateCharts: event.target.checked })
+          })
+          load()
+        })
+      })()
+    </script>
+  </body>
+</html>
