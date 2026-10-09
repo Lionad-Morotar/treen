@@ -6,6 +6,7 @@ import {
   ShortcutManager,
   createFreezeController,
   type FreezeController,
+  type RegionLockTarget,
   type SelectionSource,
 } from './freeze'
 import {
@@ -24,6 +25,8 @@ import {
   createTranslateSelection,
   macOcrEngine,
 } from './translation'
+import { composeOverlayPlan } from './overlay'
+import { createRenderSiteClient } from './render-site'
 import { describeStartup } from './startup'
 
 const logger = createLogger('desktop')
@@ -47,12 +50,16 @@ async function readOverlaySources(): Promise<readonly SelectionSource[]> {
 }
 
 /**
- * 装配翻译链路。缺 DeepSeek 密钥时不给翻译动作：冻结与拷贝照常可用，
- * 而不是让一次配置缺失把整个冻结域拆掉。翻译结果先落日志（覆盖渲染是后续切片）。
+ * 装配「点击一块区域就翻译并覆盖回屏幕」的动作。缺 DeepSeek 密钥时不给该动作：
+ * 冻结与拷贝照常可用，而不是让一次配置缺失把整个冻结域拆掉。
+ *
+ * 链路：锁定触发 → OCR + 翻译 → 覆盖计划（译文版位 + mermaid 图版位）→ 注入该屏覆盖窗。
+ * mermaid 的校验即渲染：候选是否真是一张图由渲染站裁决，故主进程不必再背一份 mermaid + jsdom。
+ * 渲染站不可达时图跳过、译文照出——一块图消失不该让整片译文一起失败。
  */
-function createTranslateAction(): (() => Promise<void>) | undefined {
+function createRegionLockAction(): ((target: RegionLockTarget) => void) | undefined {
   if (readDeepSeekKey() === undefined) {
-    logger.warn('未配置 DEEPSEEK_KEY，翻译键不注册；冻结与拷贝不受影响')
+    logger.warn('未配置 DEEPSEEK_KEY，点击翻译不启用；冻结与拷贝不受影响')
     return undefined
   }
   const translate = createTranslateSelection({
@@ -62,12 +69,30 @@ function createTranslateAction(): (() => Promise<void>) | undefined {
     pointer: pointOfInterest,
     logger,
   })
-  return async () => {
-    const outcome = await translate()
-    if (outcome.kind === 'translated') {
-      const joined = outcome.blocks.map((block) => block.translation).join(' / ')
-      logger.info(`翻译：显示器 ${outcome.displayId}，${outcome.blocks.length} 段：${joined}`)
+  const render = createRenderSiteClient()
+
+  async function translateAndOverlay(target: RegionLockTarget): Promise<void> {
+    const outcome = await translate(target.displayId)
+    if (outcome.kind !== 'translated') {
+      logger.info(`点击翻译跳过（${outcome.reason}）：显示器 ${target.displayId}`)
+      return
     }
+    const handle = freeze?.windows().find((candidate) => candidate.displayId === outcome.displayId)
+    if (handle === undefined || handle.isDestroyed()) {
+      logger.warn(`显示器 ${outcome.displayId} 的覆盖窗已不在，放弃覆盖`)
+      return
+    }
+    const plan = await composeOverlayPlan(outcome.blocks, outcome.region, { render, logger })
+    handle.setOverlay(plan)
+    logger.info(
+      `覆盖已注入：显示器 ${outcome.displayId}，${plan.texts.length} 段译文、${plan.charts.length} 张图`,
+    )
+  }
+
+  return (target) => {
+    void translateAndOverlay(target).catch((error: unknown) => {
+      logger.warn(`覆盖渲染失败：${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 }
 
@@ -91,7 +116,7 @@ function setupFreeze(): void {
     pointOfInterest,
     buildCandidates: createCandidateBuilder({ logger }),
     copySelection,
-    translateSelection: createTranslateAction(),
+    onRegionLocked: createRegionLockAction(),
     // 进入冻结失败（最常见的首跑原因是未授予屏幕录制权限）必须让用户看见，否则表现成「按了没反应」。
     reportError: (message) => {
       void dialog.showMessageBox({

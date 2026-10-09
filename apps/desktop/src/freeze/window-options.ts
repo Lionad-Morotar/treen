@@ -20,13 +20,6 @@ export const FREEZE_EXIT_ACCELERATOR = 'Escape'
 export const FREEZE_COPY_ACCELERATOR = 'CommandOrControl+C'
 
 /**
- * 冻结期触发翻译的键（provisional）。与拷贝键同属冻结期模态快捷键，退出即释放。
- * 地图描绘的交互是「点击候选后翻译」，但选区真源在渲染层、主进程无点击时刻的协调点，
- * 故本切片以显式热键触发；键位与触发方式待设置项与后续切片确认。
- */
-export const FREEZE_TRANSLATE_ACCELERATOR = 'CommandOrControl+T'
-
-/**
  * 冻结覆盖窗的构造选项，一屏一窗。
  *
  * 关键选项的取舍：

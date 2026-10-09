@@ -24,6 +24,12 @@
            别的候选时仍然留着，否则用户看不出自己锁了哪一块。 */
         --treen-locked: rgba(126, 226, 255, 0.98);
         --treen-locked-fill: rgba(8, 174, 236, 0.32);
+        /* 覆盖层配色：与渲染站科技向主题同族（深底、青色描边、亮色文字）。释义与图各自成层，
+           都盖在冻结画面上。色值集中在此，覆盖层改色只动这一处。 */
+        --treen-overlay-bg: rgba(10, 14, 20, 0.86);
+        --treen-overlay-text: #cde7ff;
+        --treen-overlay-border: rgba(34, 184, 230, 0.35);
+        --treen-overlay-clipped: rgba(255, 138, 76, 0.6);
       }
 
       #treen-freeze-frame {
@@ -68,6 +74,49 @@
         border-color: var(--treen-locked);
         background-color: var(--treen-locked-fill);
       }
+
+      /*
+        覆盖层：译文与图表的落点，由主进程算好整批送来（见 src/overlay）。
+        整层 pointer-events: none——覆盖物只是显示面，点击要继续命中下方的候选条，
+        否则译出一块之后就无法再框选别的区域。位置与尺寸全部由送来的盒子给定，
+        渲染层不做任何几何计算。
+      */
+      #treen-overlay {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      /* 一段译文的版位：盒子即 OCR 包围盒。底色压住原始文字（原位覆盖的语义），
+         折行已由主进程算好，这里只需按行输出。 */
+      .treen-overlay-text {
+        position: absolute;
+        box-sizing: border-box;
+        overflow: hidden;
+        background-color: var(--treen-overlay-bg);
+        color: var(--treen-overlay-text);
+        border: 1px solid var(--treen-overlay-border);
+        border-radius: 2px;
+      }
+
+      /* 达最小字号仍放不下时按裁剪呈现，用描边色提示「这块没显示全」。 */
+      .treen-overlay-text[data-clipped="true"] {
+        border-color: var(--treen-overlay-clipped);
+      }
+
+      .treen-overlay-line {
+        display: block;
+        white-space: pre;
+      }
+
+      /* 一张图的版位：SVG 由主进程按 contain 缩放，这里只承载它。 */
+      .treen-overlay-chart {
+        position: absolute;
+      }
+
+      .treen-overlay-chart svg {
+        display: block;
+      }
     </style>
   </head>
   <body>
@@ -75,6 +124,8 @@
     <img id="treen-freeze-frame" data-testid="freeze-frame" alt="" />
     <!-- 候选区域容器：一屏内所有可选中区域，悬停命中者加 data-hit -->
     <div id="treen-candidates" data-testid="freeze-candidates"></div>
+    <!-- 覆盖渲染层：译文与 mermaid 图的落点，内容由主进程随翻译结果注入 -->
+    <div id="treen-overlay" data-testid="freeze-overlay"></div>
     <script>
       // 主进程在截图就绪后经 executeJavaScript 调用。挂在 window 上而非模块作用域，
       // 才能被 executeJavaScript 的全局求值命中；source 是 PNG data URL。
@@ -187,6 +238,107 @@
           rect.style.width = candidate.width + 'px'
           rect.style.height = candidate.height + 'px'
           candidateLayer.appendChild(rect)
+        }
+      }
+
+      var overlayLayer = document.getElementById('treen-overlay')
+
+      /** 覆盖盒是否可用：四个数值齐全且尺寸为正。跨进程送来的数据先验形状再用。 */
+      function isOverlayBox(item) {
+        return (
+          item &&
+          typeof item.x === 'number' &&
+          typeof item.y === 'number' &&
+          typeof item.width === 'number' &&
+          typeof item.height === 'number' &&
+          item.width > 0 &&
+          item.height > 0
+        )
+      }
+
+      /** 把覆盖盒的位置与尺寸落到绝对定位元素的样式上（显示器相对 DIP，与窗口内 CSS px 同尺度）。 */
+      function placeOverlayBox(element, item) {
+        element.style.left = item.x + 'px'
+        element.style.top = item.y + 'px'
+        element.style.width = item.width + 'px'
+        element.style.height = item.height + 'px'
+      }
+
+      /**
+       * 用 DOMParser 解析 SVG 再 importNode 进来，而不是直接 innerHTML：解析出的文档是惰性的，
+       * 不会在解析阶段执行任何脚本。SVG 来自本地渲染站，且 mermaid 以 securityLevel: strict 产出，
+       * 这层是纵深防御的第二道（第一道是渲染侧的消毒与 init 指令剥离）。
+       */
+      function mountSvg(container, svgText, width, height) {
+        var parsed = new DOMParser().parseFromString(svgText, 'image/svg+xml')
+        var svg = parsed.documentElement
+        if (!svg || svg.nodeName.toLowerCase() !== 'svg') {
+          return false
+        }
+        // mermaid 可能给根 svg 带 max-width 之类内联样式，用 important 强制承载尺寸，
+        // 保证它正好铺满这个已按 contain 算好的盒子。
+        svg.style.setProperty('width', width + 'px', 'important')
+        svg.style.setProperty('height', height + 'px', 'important')
+        container.appendChild(document.importNode(svg, true))
+        return true
+      }
+
+      /**
+       * 主进程把算好的覆盖计划整批送来：texts 是译文版位（含已折行的行数组与字号），
+       * charts 是图版位（含已渲染的 SVG）。渲染层不做任何几何计算，只落样式——
+       * 字号自适应、折行、contain 适配都已在主进程的纯逻辑里完成并被单测覆盖。
+       */
+      window.__treenSetOverlay = function (plan) {
+        overlayLayer.replaceChildren()
+        if (!plan || typeof plan !== 'object') {
+          return
+        }
+        var fontFamily = typeof plan.fontFamily === 'string' ? plan.fontFamily : ''
+        var charts = Array.isArray(plan.charts) ? plan.charts : []
+        for (var c = 0; c < charts.length; c++) {
+          var chart = charts[c]
+          if (!isOverlayBox(chart) || typeof chart.svg !== 'string') {
+            continue
+          }
+          var holder = document.createElement('div')
+          holder.className = 'treen-overlay-chart'
+          holder.setAttribute('data-testid', 'freeze-chart')
+          placeOverlayBox(holder, chart)
+          if (mountSvg(holder, chart.svg, chart.width, chart.height)) {
+            overlayLayer.appendChild(holder)
+          }
+        }
+
+        var texts = Array.isArray(plan.texts) ? plan.texts : []
+        for (var t = 0; t < texts.length; t++) {
+          var text = texts[t]
+          if (!isOverlayBox(text) || !Array.isArray(text.lines)) {
+            continue
+          }
+          var box = document.createElement('div')
+          box.className = 'treen-overlay-text'
+          box.setAttribute('data-testid', 'freeze-text')
+          if (text.clipped) {
+            box.setAttribute('data-clipped', 'true')
+          }
+          placeOverlayBox(box, text)
+          if (typeof text.fontSize === 'number') {
+            box.style.fontSize = text.fontSize + 'px'
+          }
+          if (typeof text.lineHeight === 'number') {
+            box.style.lineHeight = text.lineHeight + 'px'
+          }
+          if (fontFamily !== '') {
+            box.style.fontFamily = fontFamily
+          }
+          for (var l = 0; l < text.lines.length; l++) {
+            var line = document.createElement('div')
+            line.className = 'treen-overlay-line'
+            line.setAttribute('data-testid', 'freeze-text-line')
+            line.textContent = String(text.lines[l])
+            box.appendChild(line)
+          }
+          overlayLayer.appendChild(box)
         }
       }
 
