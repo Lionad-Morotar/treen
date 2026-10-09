@@ -89,19 +89,24 @@
 
       /* 一段译文的版位：盒子即 OCR 包围盒。底色压住原始文字（原位覆盖的语义），
          折行已由主进程算好，这里只需按行输出。 */
+      /*
+        译文盒。描边用 outline 而非 border：主进程的折行按盒宽算内容宽度，border 会占掉内容区
+        （box-sizing: border-box 下每边 1px），行末字符被 overflow: hidden 切掉一截；outline 不参与
+        布局，盒内可用宽度就等于送来的宽度。代价是描边画在盒子外沿 1px，覆盖层整体 pointer-events: none
+        且底色透明，这 1px 只影响观感。
+      */
       .treen-overlay-text {
         position: absolute;
-        box-sizing: border-box;
         overflow: hidden;
         background-color: var(--treen-overlay-bg);
         color: var(--treen-overlay-text);
-        border: 1px solid var(--treen-overlay-border);
+        outline: 1px solid var(--treen-overlay-border);
         border-radius: 2px;
       }
 
       /* 达最小字号仍放不下时按裁剪呈现，用描边色提示「这块没显示全」。 */
       .treen-overlay-text[data-clipped="true"] {
-        border-color: var(--treen-overlay-clipped);
+        outline-color: var(--treen-overlay-clipped);
       }
 
       .treen-overlay-line {

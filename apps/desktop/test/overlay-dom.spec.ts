@@ -46,8 +46,14 @@ interface DocumentLike {
   querySelectorAll(selector: string): ElementList
 }
 
+interface ComputedStyleLike {
+  borderTopWidth: string
+  getPropertyValue(name: string): string
+}
+
 interface WindowLike {
   document: DocumentLike
+  getComputedStyle(element: ElementLike): ComputedStyleLike
   __treenSetOverlay(plan: unknown): void
 }
 
@@ -112,6 +118,33 @@ describe('overlay.html 的覆盖渲染', () => {
 
     const lines = toArray(box.querySelectorAll('[data-testid="freeze-text-line"]'))
     expect(lines.map((line) => line.textContent)).toEqual(['第一行', '第二行'])
+  })
+
+  it('译文盒的描边不占内容宽度，折行按盒宽算的行不会被切掉尾巴', () => {
+    const { layer, window } = loadOverlay()
+
+    window.__treenSetOverlay(
+      planWith(
+        [
+          {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 20,
+            fontSize: 10,
+            lineHeight: 12.5,
+            lines: ['铺满整行的一段文字'],
+            clipped: false,
+          },
+        ],
+        [],
+      ),
+    )
+
+    const style = window.getComputedStyle(layer.querySelector('[data-testid="freeze-text"]')!)
+    // border 会从盒内吃掉 1px（box-sizing: border-box），内容区窄于主进程折行时用的盒宽；
+    // 描边改走 outline 后不参与布局，这里钉住「没有占宽的边框」这个前提。
+    expect(style.borderTopWidth).toBe('0px')
   })
 
   it('clipped 的译文盒带上可断言的标记', () => {
