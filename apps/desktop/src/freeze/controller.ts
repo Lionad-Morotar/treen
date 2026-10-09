@@ -10,6 +10,7 @@ import {
 } from './geometry'
 import {
   DEFAULT_FREEZE_ACCELERATOR,
+  FREEZE_COMPOSITE_COPY_ACCELERATOR,
   FREEZE_COPY_ACCELERATOR,
   FREEZE_EXIT_ACCELERATOR,
 } from './window-options'
@@ -63,6 +64,12 @@ export interface OverlayWindowHandle {
   readLocked(): Promise<Rect | null>
   /** 注入覆盖计划（译文与图表的落点）；窗口已销毁时实现方须静默忽略。 */
   setOverlay(plan: OverlayPlan): void
+  /**
+   * 抓取本窗当前渲染结果中的一块（显示器相对 DIP）的 PNG 字节；窗口已失效或抓取不到像素时为 null。
+   *
+   * 取的是渲染结果而非原始截屏帧：译文与图这类覆盖内容只存在于渲染结果里。
+   */
+  captureComposite(region: Rect): Promise<Uint8Array | null>
 }
 
 /**
@@ -115,6 +122,13 @@ export interface FreezeControllerDeps {
    * 拷贝失败不该把冻结态整个拆掉，但也不能静默无反应。
    */
   copySelection?: () => unknown
+  /** 合成拷贝键；缺省用内置默认 */
+  compositeAccelerator?: string
+  /**
+   * 冻结期把覆盖窗当前渲染结果（译文与图）拷进剪贴板。缺省即不注册该键。
+   * 成败处置与 `copySelection` 同：只落日志，不拆冻结态。
+   */
+  copyComposite?: () => unknown
   /**
    * 冻结期轮询到某屏出现新锁定时触发翻译。缺省即不轮询——冻结只铺画面与出口。
    *
@@ -161,6 +175,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
   let triggerRegistered = false
   const exitAccelerator = deps.exitAccelerator ?? FREEZE_EXIT_ACCELERATOR
   const copyAccelerator = deps.copyAccelerator ?? FREEZE_COPY_ACCELERATOR
+  const compositeAccelerator = deps.compositeAccelerator ?? FREEZE_COMPOSITE_COPY_ACCELERATOR
   const lockPollIntervalMs = deps.lockPollIntervalMs ?? DEFAULT_LOCK_POLL_INTERVAL_MS
   const timers: LockPollTimers = deps.timers ?? {
     setInterval: (handler, ms) => setInterval(handler, ms),
@@ -184,6 +199,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
   function releaseShortcuts(): void {
     deps.shortcuts.unregister(exitAccelerator)
     deps.shortcuts.unregister(copyAccelerator)
+    deps.shortcuts.unregister(compositeAccelerator)
   }
 
   /**
@@ -331,6 +347,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       throw new Error(`无法进入冻结态：退出键 ${exitAccelerator} 注册失败`)
     }
     registerActionShortcut(copyAccelerator, deps.copySelection, '拷贝冻结画面')
+    registerActionShortcut(compositeAccelerator, deps.copyComposite, '拷贝合成画面')
 
     const opened: OverlayWindowHandle[] = []
     try {

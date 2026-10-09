@@ -19,7 +19,7 @@ import { registerSettingsIpc } from '../../src/settings/ipc'
 import { ShortcutManager } from '../../src/freeze/shortcuts'
 import { createFreezeController } from '../../src/freeze/controller'
 import { DEFAULT_FREEZE_ACCELERATOR, freezeWindowOptions } from '../../src/freeze/window-options'
-import { readLockedRegion } from '../../src/freeze/electron-adapters'
+import { captureRegionPng, readLockedRegion } from '../../src/freeze/electron-adapters'
 import { createSelectionCopier } from '../../src/selection/selection'
 import { frameCropWriter } from '../../src/selection/electron-clipboard'
 import type { SelectionSource } from '../../src/freeze/controller'
@@ -583,6 +583,7 @@ async function verifyFreezeShortcutLifecycle(): Promise<void> {
           setCandidates: () => {},
           readSelection: async () => null,
           readLocked: async () => null,
+          captureComposite: async () => null,
           setOverlay: () => {},
         }
       },
@@ -766,6 +767,84 @@ async function verifyClipboardCopy(): Promise<void> {
       rawAfter: (await clipboard.read()).map((item) => item.types.join('+')),
     },
   )
+}
+
+/**
+ * 合成拷贝的真链路：真窗口渲染 → 按 DIP 抓一块 → 从 PNG 里读出那一块的颜色。
+ *
+ * 用自建的隐藏窗口而不是建窗工厂产出的覆盖窗：工厂在帧注入后会 showInactive，
+ * 那会在用户桌面上弹出全屏置顶层。这里要验的是 capturePage 的尺度语义与「抓得到渲染内容」，
+ * 隐藏窗口同样成立；抓取的实现本身走的是生产同一条 `captureRegionPng`。
+ */
+async function verifyCompositeCapture(): Promise<void> {
+  const display = screen.getAllDisplays()[0]
+  check('合成拷贝冒烟需要一块显示器', display !== undefined)
+  if (display === undefined) {
+    return
+  }
+
+  const region = { x: 40, y: 30, width: 200, height: 150 }
+  const window = new BrowserWindow(freezeWindowOptions(displayLikeOf(display)))
+  try {
+    await window.loadFile(overlayPath)
+    // 探针盒是渲染层内容：它出现在抓取结果里，就等于证明了合成拷贝抓的是渲染结果而非原始帧。
+    // 盒刻意比抓取区域小并落在区域正中，这样同一张图里既有「盒内」也有「盒外」可比。
+    await window.webContents.executeJavaScript(
+      `(() => {
+         const box = document.createElement('div')
+         box.setAttribute('data-testid', 'composite-probe')
+         box.style.cssText = 'position:fixed;left:100px;top:80px;width:80px;height:60px;background:#ff0000'
+         document.body.appendChild(box)
+       })()`,
+    )
+
+    // 首帧合成之前抓到的会是一张「尺寸对、像素全透明」的空表面，按契约那就是「抓不到像素」。
+    // 故轮询到真拿到像素为止，而不是睡一个固定时长赌首绘已经完成。
+    let png: Uint8Array | null = null
+    for (let attempt = 0; attempt < 120 && png === null; attempt += 1) {
+      png = await captureRegionPng(window, region)
+      if (png === null) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    }
+    check('合成抓取拿到了 PNG 字节', png !== null && png.length > 0, png?.length ?? null)
+
+    if (png !== null) {
+      const image = nativeImage.createFromBuffer(Buffer.from(png))
+      const size = image.getSize()
+      const expected = {
+        width: region.width * display.scaleFactor,
+        height: region.height * display.scaleFactor,
+      }
+      check(
+        '抓到的是这块区域的物理像素（DIP 乘缩放比），不是整屏也不是 DIP 尺寸',
+        Math.abs(size.width - expected.width) <= 2 && Math.abs(size.height - expected.height) <= 2,
+        { size, expected, scaleFactor: display.scaleFactor },
+      )
+
+      const bitmap = image.toBitmap()
+      const at = (x: number, y: number) => {
+        const offset = (y * size.width + x) * 4
+        return {
+          b: bitmap[offset] ?? -1,
+          g: bitmap[offset + 1] ?? -1,
+          r: bitmap[offset + 2] ?? -1,
+          a: bitmap[offset + 3] ?? -1,
+        }
+      }
+      const center = at(Math.floor(size.width / 2), Math.floor(size.height / 2))
+      check('抓到的中心像素就是探针盒的红（渲染内容进了抓取结果）', near(center, { r: 255, g: 0, b: 0 }), center)
+
+      const outside = at(2, 2)
+      check('盒外像素不是探针红（抓的确实是这一块而不是整屏）', !near(outside, { r: 255, g: 0, b: 0 }), outside)
+    }
+  } catch (error) {
+    check('合成抓取冒烟未抛异常', false, error instanceof Error ? error.message : String(error))
+  } finally {
+    if (!window.isDestroyed()) {
+      window.destroy()
+    }
+  }
 }
 
 /**
@@ -1203,6 +1282,7 @@ app.whenReady().then(async () => {
     await verifySystemWindows()
     await verifyFreezeShortcutLifecycle()
     await verifyClipboardCopy()
+    await verifyCompositeCapture()
     await verifySettingsRoundTrip()
     if (window !== null && !window.isDestroyed()) {
       window.destroy()

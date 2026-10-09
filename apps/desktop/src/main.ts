@@ -16,8 +16,8 @@ import {
   pointOfInterest,
 } from './freeze/electron-adapters'
 import { createCandidateBuilder } from './highlight/electron-candidates'
-import { createSelectionCopier } from './selection'
-import { frameCropWriter } from './selection/electron-clipboard'
+import { createCompositeCopier, createSelectionCopier } from './selection'
+import { frameCropWriter, pngClipboardWriter } from './selection/electron-clipboard'
 import {
   createBatchTranslator,
   createDeepSeekCompleter,
@@ -167,6 +167,21 @@ function setupFreeze(settings: SettingsStore): void {
     logger,
   })
 
+  // 合成拷贝的取数源是覆盖窗渲染结果而不是截屏帧：译文与图只存在于渲染层。
+  // 各屏的窗口列表按需现取，与读选区同源，保证「拷的就是屏幕上正显示的那一屏」。
+  const copyComposite = createCompositeCopier({
+    readSources: readOverlaySources,
+    capture: async (source, region) => {
+      const handle = freeze
+        ?.windows()
+        .find((candidate) => candidate.displayId === source.display.id)
+      return handle === undefined ? null : handle.captureComposite(region)
+    },
+    writePng: pngClipboardWriter(),
+    pointer: pointOfInterest,
+    logger,
+  })
+
   const triggerAccelerator = settings.read().freezeAccelerator
   const controller = createFreezeController({
     listDisplays,
@@ -176,6 +191,7 @@ function setupFreeze(settings: SettingsStore): void {
     pointOfInterest,
     buildCandidates: createCandidateBuilder({ logger }),
     copySelection,
+    copyComposite,
     triggerAccelerator,
     onRegionLocked: buildRegionLockAction(settings),
     // 进入冻结失败（最常见的首跑原因是未授予屏幕录制权限）必须让用户看见，否则表现成「按了没反应」。

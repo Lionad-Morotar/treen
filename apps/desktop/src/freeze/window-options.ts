@@ -25,6 +25,14 @@ export const FREEZE_EXIT_ACCELERATOR = 'Escape'
 export const FREEZE_COPY_ACCELERATOR = 'CommandOrControl+C'
 
 /**
+ * 冻结期拷贝合成图的键：抓覆盖窗当前渲染结果，译文与图都在里面。
+ *
+ * 与 `FREEZE_COPY_ACCELERATOR` 并存而不是顶替：后者拷的是原始截屏帧（不含任何覆盖内容），
+ * 两者是不同产物，把合成拷贝悄悄挂到旧键上会改掉原键的语义。同样只在冻结期注册。
+ */
+export const FREEZE_COMPOSITE_COPY_ACCELERATOR = 'CommandOrControl+Shift+C'
+
+/**
  * 冻结覆盖窗的构造选项，一屏一窗。
  *
  * 关键选项的取舍：

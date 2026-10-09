@@ -24,6 +24,7 @@ const secondary: DisplayLike = {
 const TRIGGER = 'CommandOrControl+Shift+X'
 const ESCAPE = 'Escape'
 const COPY = 'CommandOrControl+C'
+const COMPOSITE = 'CommandOrControl+Shift+C'
 const TRANSLATE = 'CommandOrControl+T'
 
 function fakeShortcuts(accept: (accelerator: string) => boolean = () => true) {
@@ -82,6 +83,7 @@ function fakeWindows(failOnDisplayId?: number) {
         }),
         readLocked: vi.fn(async () => record.locked),
         setOverlay: vi.fn(),
+        captureComposite: vi.fn(async () => null),
       }
       record.handle = handle
       records.push(record)
@@ -138,6 +140,7 @@ interface HarnessOptions {
   capture?: () => Promise<FreezeFrame[]>
   buildCandidates?: (display: DisplayLike, frame: FreezeFrame) => Promise<readonly Candidate[]>
   copySelection?: () => unknown
+  copyComposite?: () => unknown
   onRegionLocked?: (target: RegionLockTarget) => unknown
   timers?: LockPollTimers
 }
@@ -160,6 +163,7 @@ function createHarness(options: HarnessOptions = {}) {
     exitAccelerator: ESCAPE,
     copyAccelerator: COPY,
     copySelection: options.copySelection,
+    copyComposite: options.copyComposite,
     onRegionLocked: options.onRegionLocked,
     timers: options.timers,
     pointOfInterest: () => options.pointer ?? { x: 10, y: 10 },
@@ -607,6 +611,60 @@ describe('freeze controller: 冻结期拷贝键', () => {
     await expect(harness.controller.enter()).rejects.toThrow(/建窗失败/)
 
     expect(harness.shortcuts.handlers.has(COPY)).toBe(false)
+  })
+})
+
+describe('freeze controller: 冻结期合成拷贝键', () => {
+  it('冻结期间注册合成键，退出时释放', async () => {
+    const harness = createHarness({ copyComposite: vi.fn() })
+
+    await harness.controller.enter()
+    expect(harness.shortcuts.handlers.has(COMPOSITE)).toBe(true)
+
+    harness.controller.exit()
+    expect(harness.shortcuts.handlers.has(COMPOSITE)).toBe(false)
+  })
+
+  it('两个拷贝键各管各的：按合成键不触发原始截图拷贝，反之亦然', async () => {
+    const copySelection = vi.fn()
+    const copyComposite = vi.fn()
+    const harness = createHarness({ copySelection, copyComposite })
+
+    await harness.controller.enter()
+    harness.shortcuts.handlers.get(COMPOSITE)?.()
+
+    await vi.waitFor(() => expect(copyComposite).toHaveBeenCalledTimes(1))
+    expect(copySelection).not.toHaveBeenCalled()
+
+    harness.shortcuts.handlers.get(COPY)?.()
+
+    await vi.waitFor(() => expect(copySelection).toHaveBeenCalledTimes(1))
+    expect(copyComposite).toHaveBeenCalledTimes(1)
+  })
+
+  it('缺省不给合成拷贝即不注册该键，冻结仍然成立', async () => {
+    const harness = createHarness()
+
+    await harness.controller.enter()
+
+    expect(harness.controller.isFrozen()).toBe(true)
+    expect(harness.shortcuts.handlers.has(COMPOSITE)).toBe(false)
+  })
+
+  it('合成拷贝失败只记日志，不拆掉冻结态', async () => {
+    const harness = createHarness({
+      copyComposite: async () => {
+        throw new Error('抓取失败')
+      },
+    })
+
+    await harness.controller.enter()
+    harness.shortcuts.handlers.get(COMPOSITE)?.()
+
+    await vi.waitFor(() =>
+      expect(harness.warn.mock.calls.some(([message]) => String(message).includes('抓取失败'))).toBe(true),
+    )
+    expect(harness.controller.isFrozen()).toBe(true)
   })
 })
 
