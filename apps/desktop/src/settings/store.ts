@@ -1,5 +1,6 @@
 import {
   DEFAULT_TRANSLATE_CHARTS,
+  DEFAULT_TRANSLATE_NODE_LABELS,
   DEFAULT_TRANSLATE_TEXT,
   normalizeSettings,
   readSettings,
@@ -28,6 +29,7 @@ export const SETTINGS_DEFAULTS: TreenSettings = {
   freezeAccelerator: DEFAULT_FREEZE_ACCELERATOR,
   translateText: DEFAULT_TRANSLATE_TEXT,
   translateCharts: DEFAULT_TRANSLATE_CHARTS,
+  translateNodeLabels: DEFAULT_TRANSLATE_NODE_LABELS,
 }
 
 export interface SettingsStore {

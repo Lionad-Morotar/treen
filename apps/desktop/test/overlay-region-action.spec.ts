@@ -17,11 +17,12 @@ import type { TreenSettings } from '@treen/shared'
 
 const REGION: Rect = { x: 0, y: 0, width: 200, height: 100 }
 
-/** 两个开关都开的一份完整设置；本文件只关心开关，热键取一个占位值。 */
+/** 开关全开的一份完整设置；本文件只关心开关，热键取一个占位值。 */
 const SETTINGS: TreenSettings = {
   freezeAccelerator: 'Alt+T',
   translateText: true,
   translateCharts: true,
+  translateNodeLabels: true,
 }
 
 function withSettings(patch: Partial<TreenSettings>): TreenSettings {
@@ -122,15 +123,15 @@ async function settle(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve))
 }
 
-describe('createRegionLockAction：两个开关的门控', () => {
-  it('两项都开：翻译与图表都走，计划原样注入', async () => {
+describe('createRegionLockAction：开关的门控', () => {
+  it('全部都开：翻译、图表与图内文案都走，计划原样注入', async () => {
     const { action, translate, compose, setOverlay } = harness()
 
     action.trigger({ displayId: 7, region: REGION })
     await settle()
 
     expect(translate).toHaveBeenCalledWith(7, { translateText: true })
-    expect(compose).toHaveBeenCalledWith(BLOCKS, REGION, { texts: true, charts: true })
+    expect(compose).toHaveBeenCalledWith(BLOCKS, REGION, { texts: true, charts: true, nodeLabels: true })
     expect(setOverlay).toHaveBeenCalledTimes(1)
   })
 
@@ -143,7 +144,7 @@ describe('createRegionLockAction：两个开关的门控', () => {
     await settle()
 
     expect(translate).toHaveBeenCalledWith(7, { translateText: false })
-    expect(compose).toHaveBeenCalledWith(BLOCKS, REGION, { texts: false, charts: true })
+    expect(compose).toHaveBeenCalledWith(BLOCKS, REGION, { texts: false, charts: true, nodeLabels: true })
     expect(setOverlay).toHaveBeenCalledTimes(1)
   })
 
@@ -156,12 +157,24 @@ describe('createRegionLockAction：两个开关的门控', () => {
     await settle()
 
     expect(translate).toHaveBeenCalledWith(7, { translateText: true })
-    expect(compose).toHaveBeenCalledWith(BLOCKS, REGION, { texts: true, charts: false })
+    expect(compose).toHaveBeenCalledWith(BLOCKS, REGION, { texts: true, charts: false, nodeLabels: true })
   })
 
-  it('两项都关：一次触发什么都不做，连翻译都不发起', async () => {
+  it('关图内文案：图链路照走，但覆盖计划不翻译节点文案', async () => {
+    const { action, compose, setOverlay } = harness({
+      settings: withSettings({ translateNodeLabels: false }),
+    })
+
+    action.trigger({ displayId: 7, region: REGION })
+    await settle()
+
+    expect(compose).toHaveBeenCalledWith(BLOCKS, REGION, { texts: true, charts: true, nodeLabels: false })
+    expect(setOverlay).toHaveBeenCalledTimes(1)
+  })
+
+  it('全部都关：一次触发什么都不做，连翻译都不发起', async () => {
     const { action, translate, compose, setOverlay, info } = harness({
-      settings: withSettings({ translateText: false, translateCharts: false }),
+      settings: withSettings({ translateText: false, translateCharts: false, translateNodeLabels: false }),
     })
 
     action.trigger({ displayId: 7, region: REGION })

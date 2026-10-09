@@ -279,7 +279,12 @@ describe.skipIf(!FIXTURE_AVAILABLE)('端到端回放：截图 → OCR → 翻译
 
     const render = createRenderSiteClient({ origin: site.origin })
     const regionAction = createRegionLockAction({
-      readSettings: () => ({ freezeAccelerator: 'CommandOrControl+Shift+X', translateText: true, translateCharts: true }),
+      readSettings: () => ({
+        freezeAccelerator: 'CommandOrControl+Shift+X',
+        translateText: true,
+        translateCharts: true,
+        translateNodeLabels: true,
+      }),
       translate: (displayId, options) => translate(displayId, options),
       compose: (blocks, area, options) =>
         composeOverlayPlan(blocks, area, { render, texts: options.texts }),

@@ -196,6 +196,18 @@
             role="switch"
           />
         </div>
+        <div class="treen-row">
+          <label class="treen-row-label" for="setting-translate-node-labels">
+            <strong>翻译图内文案</strong>
+            <span>图内节点文字随译文语言（翻译失败自动用原文）</span>
+          </label>
+          <input
+            id="setting-translate-node-labels"
+            data-testid="settings-translate-node-labels"
+            type="checkbox"
+            role="switch"
+          />
+        </div>
       </section>
 
       <!-- 冻结区块：触发热键 -->
@@ -229,6 +241,7 @@
         var status = document.getElementById('settings-status')
         var TEXT_FIELD = 'setting-translate-text'
         var CHARTS_FIELD = 'setting-translate-charts'
+        var NODE_LABELS_FIELD = 'setting-translate-node-labels'
         var HOTKEY_FIELD = 'setting-freeze-accelerator'
 
         // 修饰键本身的 keydown 不构成组合键，按到它们时什么都不做（等真正的那个键）。
@@ -324,6 +337,7 @@
           }
           byId(TEXT_FIELD).checked = settings.translateText === true
           byId(CHARTS_FIELD).checked = settings.translateCharts === true
+          byId(NODE_LABELS_FIELD).checked = settings.translateNodeLabels === true
           if (typeof settings.freezeAccelerator === 'string') {
             byId(HOTKEY_FIELD).value = settings.freezeAccelerator
           }
@@ -376,6 +390,9 @@
           })
           byId(CHARTS_FIELD).addEventListener('change', function (event) {
             save({ translateCharts: event.target.checked })
+          })
+          byId(NODE_LABELS_FIELD).addEventListener('change', function (event) {
+            save({ translateNodeLabels: event.target.checked })
           })
           byId(HOTKEY_FIELD).addEventListener('keydown', function (event) {
             // 只读框本来不会吞按键，但方向键/空格会滚动页面，故一律拦下。

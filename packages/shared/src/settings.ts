@@ -19,6 +19,9 @@ export const DEFAULT_TRANSLATE_TEXT = true
 /** 翻译图表开关的默认值：默认开（验收口径）。关掉只影响 mermaid 图的提取与渲染。 */
 export const DEFAULT_TRANSLATE_CHARTS = true
 
+/** 图内节点文案翻译开关的默认值：默认开（用户拍板「默认翻译」）。关掉时图用识别到的原文源码渲染。 */
+export const DEFAULT_TRANSLATE_NODE_LABELS = true
+
 /** 设置文件名。落在调用方给出的配置目录下（桌面壳传 `app.getPath('userData')`）。 */
 export const SETTINGS_FILENAME = 'settings.json'
 
@@ -29,6 +32,8 @@ export interface TreenSettings {
   translateText: boolean
   /** 是否提取并覆盖 mermaid 图表 */
   translateCharts: boolean
+  /** 是否翻译图内节点文案（失败自动回落原文，图不会因此消失） */
+  translateNodeLabels: boolean
 }
 
 /** 设置文件路径：配置目录 + 固定文件名。 */
@@ -66,6 +71,7 @@ export function normalizeSettings(raw: unknown, defaults: TreenSettings): TreenS
     freezeAccelerator: readString(source.freezeAccelerator, defaults.freezeAccelerator),
     translateText: readBoolean(source.translateText, defaults.translateText),
     translateCharts: readBoolean(source.translateCharts, defaults.translateCharts),
+    translateNodeLabels: readBoolean(source.translateNodeLabels, defaults.translateNodeLabels),
   }
 }
 
