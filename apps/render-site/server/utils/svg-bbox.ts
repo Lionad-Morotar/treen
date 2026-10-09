@@ -1,3 +1,5 @@
+import { advanceEm } from '@treen/shared/text-metrics'
+
 /**
  * 纯 Node 的 SVG 包围盒计算：给 jsdom 里的 `getBBox()` 提供一个内容感知的实现。
  *
@@ -10,8 +12,9 @@
  * 与 `transform`（translate/scale/matrix/rotate）。`path` 的曲线控制点按坐标点取包围盒，
  * 是略保守的上界（曲线在控制点凸包内），对 mermaid 的边与圆角形状足够。
  *
- * 文本按**等宽字体**度量：Treen 把图表字体钉成等宽（见 mermaid-theme），等宽字体的字宽是常量
- * （约 0.6em），因此 width = 字符数 × 0.6 × fontSize 是字体物理属性而非经验拟合。
+ * 文本按**等宽字体**度量：Treen 把图表字体钉成等宽（见 mermaid-theme），等宽字体的字宽是常量，
+ * 故文本宽度 = Σ(逐字符 em) × fontSize。前进宽度表与覆盖层共用一处（`@treen/shared/text-metrics`），
+ * 因为两者绑的是同一个字体栈，分开维护会在换字体时静默分叉。
  */
 
 export interface SvgBox {
@@ -19,44 +22,6 @@ export interface SvgBox {
   y: number
   width: number
   height: number
-}
-
-/**
- * 半角字符（拉丁字母、数字、ASCII 标点）在等宽字体栈下的前进宽度（em）。
- * 真机 Chromium（Menlo/SF Mono 栈，font-size 16）实测 9.6328px/字符 = 0.602em。
- */
-export const HALFWIDTH_ADVANCE_EM = 0.602
-
-/**
- * 全角字符（CJK 汉字、假名、全角标点）的前进宽度（em）。实测 16px/字符 = 1.0em。
- * 全角是汉字在等宽上下文里的固有宽度，不随字体栈变化，故取整数 1。
- */
-export const FULLWIDTH_ADVANCE_EM = 1
-
-/** 判断码点是否按全角（1em）计宽。覆盖 CJK、假名、谚文与全角标点区段。 */
-function isFullWidthCodePoint(code: number): boolean {
-  return (
-    (code >= 0x1100 && code <= 0x115f) ||
-    (code >= 0x2e80 && code <= 0x303e) ||
-    (code >= 0x3041 && code <= 0x33ff) ||
-    (code >= 0x3400 && code <= 0x4dbf) ||
-    (code >= 0x4e00 && code <= 0x9fff) ||
-    (code >= 0xa000 && code <= 0xa4cf) ||
-    (code >= 0xac00 && code <= 0xd7a3) ||
-    (code >= 0xf900 && code <= 0xfaff) ||
-    (code >= 0xfe30 && code <= 0xfe4f) ||
-    (code >= 0xff00 && code <= 0xff60) ||
-    (code >= 0xffe0 && code <= 0xffe6)
-  )
-}
-
-/** 文本在等宽字体下的宽度（em）：逐码点累加半角/全角前进宽度。 */
-function textWidthEm(text: string): number {
-  let em = 0
-  for (const char of text) {
-    em += isFullWidthCodePoint(char.codePointAt(0) ?? 0) ? FULLWIDTH_ADVANCE_EM : HALFWIDTH_ADVANCE_EM
-  }
-  return em
 }
 
 /**
@@ -334,7 +299,7 @@ function textBox(el: Element): SvgBox | null {
   }
   const anchor = resolveTextAnchor(el)
   const rawX = or0(attr(el, 'x'))
-  const width = textWidthEm(text) * fontSize
+  const width = advanceEm(text) * fontSize
   // middle/end 锚点让文本以 x 为中心/右端对齐；只影响 x 落点，不影响尺寸。
   const x = anchor === 'middle' ? rawX - width / 2 : anchor === 'end' ? rawX - width : rawX
   const ascent = ASCENT_EM * fontSize

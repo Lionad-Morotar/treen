@@ -76,6 +76,23 @@ function containsPoint(display: DisplayLike, point: Point): boolean {
   return displayContainingPoint([display], point) !== undefined
 }
 
+/**
+ * 按屏选目标：已知是哪块屏的锁定时用它，不再靠光标推断。
+ *
+ * 锁定触发（轮询）走这条：触发源已给出 displayId，多屏各有锁定时不能退化成「光标在哪就译哪」。
+ * 该屏不存在或没有锁定即返回 null（触发源只会报有锁定的屏，这里是防御）。
+ */
+export function pickTargetForDisplay(
+  sources: readonly SelectionSource[],
+  displayId: number,
+): CopyTarget | null {
+  const source = sources.find((candidate) => candidate.display.id === displayId)
+  if (source === undefined || source.locked === null) {
+    return null
+  }
+  return { source, region: source.locked, fromLock: true }
+}
+
 export interface SelectionCopierDeps {
   /** 收集各屏当前的选区素材（锁定选区由各覆盖窗的渲染层拉取而来） */
   readSources(): Promise<readonly SelectionSource[]>

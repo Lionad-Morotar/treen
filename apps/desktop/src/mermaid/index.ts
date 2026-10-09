@@ -1,8 +1,8 @@
-import { detectMermaidBlocks } from './detect'
-import { normalizeMermaid } from './normalize'
+import { normalizeMermaidCandidates, type MermaidCandidateBlock } from './candidates'
 
 export * from './detect'
 export * from './normalize'
+export * from './candidates'
 export { createMermaidValidator } from './parse'
 
 /**
@@ -11,15 +11,8 @@ export { createMermaidValidator } from './parse'
  */
 export type MermaidValidator = (source: string) => Promise<boolean>
 
-/** 判定为「命中」的一段 mermaid。source 已归一化，是 S7 渲染站要消费的形态。 */
-export interface MermaidBlock {
-  /** 归一化后的源码，可直接送渲染 */
-  source: string
-  /** 检测到的原始候选文本（未归一化），留作排障与回放 */
-  original: string
-  startLine: number
-  endLine: number
-}
+/** 判定为「命中」的一段 mermaid：结构检测 + 归一化通过，且校验器认可。 */
+export type MermaidBlock = MermaidCandidateBlock
 
 export interface ExtractMermaidOptions {
   validate: MermaidValidator
@@ -34,18 +27,10 @@ export interface ExtractMermaidOptions {
  */
 export async function extractMermaidBlocks(text: string, options: ExtractMermaidOptions): Promise<MermaidBlock[]> {
   const hits: MermaidBlock[] = []
-
-  for (const candidate of detectMermaidBlocks(text)) {
-    const source = normalizeMermaid(candidate.source)
-    if (await options.validate(source)) {
-      hits.push({
-        source,
-        original: candidate.source,
-        startLine: candidate.startLine,
-        endLine: candidate.endLine,
-      })
+  for (const candidate of normalizeMermaidCandidates(text)) {
+    if (await options.validate(candidate.source)) {
+      hits.push(candidate)
     }
   }
-
   return hits
 }

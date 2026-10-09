@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   createFreezeController,
   type FreezeFrame,
+  type LockPollTimers,
   type OverlayWindowHandle,
+  type RegionLockTarget,
   type SelectionSource,
 } from '../src/freeze/controller'
 import { ShortcutManager, type ShortcutRegistrar } from '../src/freeze/shortcuts'
-import type { DisplayLike } from '../src/freeze/geometry'
+import type { DisplayLike, Rect } from '../src/freeze/geometry'
 import type { Candidate } from '../src/highlight/candidates'
 
 const primary: DisplayLike = {
@@ -44,6 +46,8 @@ interface WindowRecord {
   handle: OverlayWindowHandle
   display: DisplayLike
   frame: FreezeFrame
+  /** 该屏当前锁定的选区；测试直接改它来模拟用户在渲染层点了某块区域 */
+  locked: Rect | null
 }
 
 function fakeWindows(failOnDisplayId?: number) {
@@ -56,6 +60,12 @@ function fakeWindows(failOnDisplayId?: number) {
         throw new Error(`模拟建窗失败：display ${display.id}`)
       }
       const id = ++seq
+      const record = {
+        display,
+        frame,
+        locked: null as Rect | null,
+        handle: undefined as unknown as OverlayWindowHandle,
+      }
       const handle: OverlayWindowHandle = {
         id,
         displayId: display.id,
@@ -68,14 +78,46 @@ function fakeWindows(failOnDisplayId?: number) {
         readSelection: async (): Promise<SelectionSource> => ({
           display,
           frame,
-          locked: null,
+          locked: record.locked,
         }),
+        readLocked: vi.fn(async () => record.locked),
+        setOverlay: vi.fn(),
       }
-      records.push({ handle, display, frame })
+      record.handle = handle
+      records.push(record)
       return handle
     },
   }
   return { factory, records }
+}
+
+/** 确定性定时器：控制器只在测试显式 tick 时轮询，不依赖真实时钟。 */
+function manualTimers() {
+  const slots: { active: boolean; handler: () => void }[] = []
+  const timers: LockPollTimers = {
+    setInterval: (handler) => {
+      slots.push({ active: true, handler })
+      return slots.length - 1
+    },
+    clearInterval: (handle) => {
+      const slot = slots[handle as number]
+      if (slot !== undefined) {
+        slot.active = false
+      }
+    },
+  }
+  return {
+    timers,
+    tick: () => {
+      for (const slot of slots) {
+        if (slot.active) {
+          slot.handler()
+        }
+      }
+    },
+    intervalCount: () => slots.length,
+    activeCount: () => slots.filter((slot) => slot.active).length,
+  }
 }
 
 function frameFor(display: DisplayLike): FreezeFrame {
@@ -96,7 +138,8 @@ interface HarnessOptions {
   capture?: () => Promise<FreezeFrame[]>
   buildCandidates?: (display: DisplayLike, frame: FreezeFrame) => Promise<readonly Candidate[]>
   copySelection?: () => unknown
-  translateSelection?: () => unknown
+  onRegionLocked?: (target: RegionLockTarget) => unknown
+  timers?: LockPollTimers
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -117,8 +160,8 @@ function createHarness(options: HarnessOptions = {}) {
     exitAccelerator: ESCAPE,
     copyAccelerator: COPY,
     copySelection: options.copySelection,
-    translateAccelerator: TRANSLATE,
-    translateSelection: options.translateSelection,
+    onRegionLocked: options.onRegionLocked,
+    timers: options.timers,
     pointOfInterest: () => options.pointer ?? { x: 10, y: 10 },
     buildCandidates: options.buildCandidates,
     reportError,
@@ -511,66 +554,165 @@ describe('freeze controller: 冻结期拷贝键', () => {
   })
 })
 
-describe('freeze controller: 冻结期翻译键', () => {
-  it('冻结期间注册翻译键，退出时释放', async () => {
-    const harness = createHarness({ translateSelection: vi.fn() })
+describe('freeze controller: 锁定跳变触发翻译（拉取式轮询）', () => {
+  async function frozenHarness(options: HarnessOptions & { onRegionLocked: (t: RegionLockTarget) => unknown }) {
+    const clock = manualTimers()
+    const harness = createHarness({ ...options, timers: clock.timers })
+    harness.controller.start()
+    harness.shortcuts.handlers.get(TRIGGER)?.()
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
+    return { harness, clock }
+  }
+
+  it('冻结期不注册翻译热键——触发源是点击而非键盘', async () => {
+    const { harness } = await frozenHarness({ onRegionLocked: vi.fn() })
+
+    expect(harness.shortcuts.handlers.has(TRANSLATE)).toBe(false)
+    expect(harness.shortcuts.handlers.has(COPY)).toBe(false)
+    expect(harness.shortcuts.handlers.has(ESCAPE)).toBe(true)
+  })
+
+  it('缺省不给触发动作即不轮询，冻结仍然成立', async () => {
+    const clock = manualTimers()
+    const harness = createHarness({ timers: clock.timers })
 
     await harness.controller.enter()
-    expect(harness.shortcuts.handlers.has(TRANSLATE)).toBe(true)
+
+    expect(clock.intervalCount()).toBe(0)
+    expect(harness.controller.isFrozen()).toBe(true)
+  })
+
+  it('某屏首次出现锁定即触发一次，带上该屏与矩形', async () => {
+    const onRegionLocked = vi.fn()
+    const { harness, clock } = await frozenHarness({ onRegionLocked })
+    const record = harness.windows.records[0]
+    expect(record).toBeDefined()
+    record!.locked = { x: 10, y: 20, width: 30, height: 40 }
+
+    clock.tick()
+
+    await vi.waitFor(() => expect(onRegionLocked).toHaveBeenCalledTimes(1))
+    expect(onRegionLocked).toHaveBeenCalledWith({
+      displayId: record!.display.id,
+      region: { x: 10, y: 20, width: 30, height: 40 },
+    })
+  })
+
+  it('未锁定的屏不触发', async () => {
+    const onRegionLocked = vi.fn()
+    const { harness, clock } = await frozenHarness({ onRegionLocked })
+
+    clock.tick()
+
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
+    expect(onRegionLocked).not.toHaveBeenCalled()
+  })
+
+  it('反复读到同一块锁定不重复触发', async () => {
+    const onRegionLocked = vi.fn()
+    const { harness, clock } = await frozenHarness({ onRegionLocked })
+    const record = harness.windows.records[0]!
+    record.locked = { x: 1, y: 2, width: 3, height: 4 }
+
+    clock.tick()
+    await vi.waitFor(() => expect(onRegionLocked).toHaveBeenCalledTimes(1))
+    clock.tick()
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(true))
+
+    expect(onRegionLocked).toHaveBeenCalledTimes(1)
+  })
+
+  it('读锁定失败不当成未锁定：既不重复触发，也不逐轮刷日志', async () => {
+    const onRegionLocked = vi.fn()
+    const { harness, clock } = await frozenHarness({ onRegionLocked, displays: [primary] })
+    const record = harness.windows.records[0]!
+    const handle = record.handle
+    record.locked = { x: 10, y: 20, width: 30, height: 40 }
+    // 一轮轮询是异步的（且未读完时下一 tick 会被折叠），跨一个宏任务再断言才落到稳定态。
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+    clock.tick()
+    await settle()
+    expect(onRegionLocked).toHaveBeenCalledTimes(1)
+
+    // 注入原语抖动：读失败若记成「这一屏没锁」，下一轮读到同一块锁就满足 null → 矩形的跳变判据，
+    // 同一块区域会被重复 OCR 与重复的付费翻译；连续失败也只该在开头记一条日志。
+    vi.mocked(handle.readLocked).mockRejectedValue(new Error('注入原语未就绪'))
+    clock.tick()
+    await settle()
+    clock.tick()
+    await settle()
+
+    expect(onRegionLocked).toHaveBeenCalledTimes(1)
+    expect(harness.warn.mock.calls.filter(([message]) => String(message).includes('读显示器'))).toHaveLength(1)
+
+    // 读恢复后仍不该把同一块锁当成新的跳变。
+    vi.mocked(handle.readLocked).mockImplementation(async () => record.locked)
+    clock.tick()
+    await settle()
+
+    expect(onRegionLocked).toHaveBeenCalledTimes(1)
+  })
+
+  it('换到另一块锁定视为新选择，再触发一次', async () => {
+    const onRegionLocked = vi.fn()
+    const { harness, clock } = await frozenHarness({ onRegionLocked })
+    const record = harness.windows.records[0]!
+    record.locked = { x: 1, y: 2, width: 3, height: 4 }
+    clock.tick()
+    await vi.waitFor(() => expect(onRegionLocked).toHaveBeenCalledTimes(1))
+
+    record.locked = { x: 5, y: 6, width: 7, height: 8 }
+    clock.tick()
+
+    await vi.waitFor(() => expect(onRegionLocked).toHaveBeenCalledTimes(2))
+    expect(onRegionLocked).toHaveBeenLastCalledWith({
+      displayId: record.display.id,
+      region: { x: 5, y: 6, width: 7, height: 8 },
+    })
+  })
+
+  it('多屏各自锁定各自触发，displayId 不串', async () => {
+    const onRegionLocked = vi.fn()
+    const { harness, clock } = await frozenHarness({ onRegionLocked })
+    harness.windows.records[0]!.locked = { x: 1, y: 1, width: 1, height: 1 }
+    harness.windows.records[1]!.locked = { x: 2, y: 2, width: 2, height: 2 }
+
+    clock.tick()
+
+    await vi.waitFor(() => expect(onRegionLocked).toHaveBeenCalledTimes(2))
+    expect(onRegionLocked.mock.calls.map(([target]) => target.displayId).sort()).toEqual([
+      primary.id,
+      secondary.id,
+    ])
+  })
+
+  it('退出冻结即停止轮询，之后再 tick 不再触发', async () => {
+    const onRegionLocked = vi.fn()
+    const { harness, clock } = await frozenHarness({ onRegionLocked })
 
     harness.controller.exit()
 
-    expect(harness.shortcuts.handlers.has(TRANSLATE)).toBe(false)
+    expect(clock.activeCount()).toBe(0)
+    harness.windows.records[0]!.locked = { x: 1, y: 1, width: 1, height: 1 }
+    clock.tick()
+    await vi.waitFor(() => expect(harness.controller.isFrozen()).toBe(false))
+    expect(onRegionLocked).not.toHaveBeenCalled()
   })
 
-  it('缺省不给翻译键，冻结仍然成立', async () => {
-    const harness = createHarness()
-
-    await harness.controller.enter()
-
-    expect(harness.shortcuts.handlers.has(TRANSLATE)).toBe(false)
-    expect(harness.controller.isFrozen()).toBe(true)
-  })
-
-  it('翻译键注册失败只记日志，不进冻结失败路径', async () => {
-    const harness = createHarness({
-      translateSelection: vi.fn(),
-      acceptAccelerator: (accelerator) => accelerator !== TRANSLATE,
-    })
-
-    await harness.controller.enter()
-
-    expect(harness.controller.isFrozen()).toBe(true)
-    expect(harness.shortcuts.handlers.has(ESCAPE)).toBe(true)
-    expect(harness.warn.mock.calls.some(([message]) => String(message).includes(TRANSLATE))).toBe(true)
-  })
-
-  it('按翻译键把动作交给注入的实现，异步失败收进日志且不拆掉冻结', async () => {
-    const translateSelection = vi.fn(async () => {
+  it('触发动作异步失败只记日志，不拆掉冻结', async () => {
+    const onRegionLocked = vi.fn(async () => {
       throw new Error('翻译链路炸了')
     })
-    const harness = createHarness({ translateSelection })
+    const { harness, clock } = await frozenHarness({ onRegionLocked })
+    harness.windows.records[0]!.locked = { x: 1, y: 1, width: 1, height: 1 }
 
-    await harness.controller.enter()
-    harness.shortcuts.handlers.get(TRANSLATE)?.()
+    clock.tick()
 
-    await vi.waitFor(() => expect(translateSelection).toHaveBeenCalledTimes(1))
     await vi.waitFor(() =>
       expect(harness.warn.mock.calls.some(([message]) => String(message).includes('翻译链路炸了'))).toBe(true),
     )
     expect(harness.controller.isFrozen()).toBe(true)
-  })
-
-  it('拷贝键与翻译键可并存，退出时一并释放', async () => {
-    const harness = createHarness({ copySelection: vi.fn(), translateSelection: vi.fn() })
-
-    await harness.controller.enter()
-    expect(harness.shortcuts.handlers.has(COPY)).toBe(true)
-    expect(harness.shortcuts.handlers.has(TRANSLATE)).toBe(true)
-
-    harness.controller.exit()
-
-    expect(harness.shortcuts.handlers.size).toBe(0)
   })
 })
 

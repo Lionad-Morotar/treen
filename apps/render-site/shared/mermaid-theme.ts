@@ -1,3 +1,5 @@
+import { MONOSPACE_FONT_FAMILY } from '@treen/shared/text-metrics'
+
 /**
  * 渲染站的 mermaid 预置样式与安全配置——服务端渲染器与浏览器渲染页共用的唯一来源。
  *
@@ -18,10 +20,6 @@ export const MERMAID_SECURITY_LEVEL = 'strict' as const
 
 /** 主题基线：`base` 是唯一允许细粒度覆写 themeVariables 的内置主题。 */
 export const MERMAID_THEME = 'base' as const
-
-/** 等宽字体栈：科技向的排版语言；同时是「图表不随外部应用的字体漂移」的一部分。 */
-export const MERMAID_FONT_FAMILY =
-  'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace'
 
 /**
  * 允许被源码指令覆写的配置键白名单。
@@ -53,7 +51,7 @@ export const MERMAID_THEME_VARIABLES = {
   clusterBorder: '#1f4b63',
   titleColor: '#e6f3ff',
   edgeLabelBackground: '#0a0e14',
-  fontFamily: MERMAID_FONT_FAMILY,
+  fontFamily: MONOSPACE_FONT_FAMILY,
   fontSize: '16px',
 } as const
 
@@ -97,7 +95,7 @@ export const MERMAID_RENDER_CONFIG = {
   startOnLoad: false,
   securityLevel: MERMAID_SECURITY_LEVEL,
   theme: MERMAID_THEME,
-  fontFamily: MERMAID_FONT_FAMILY,
+  fontFamily: MONOSPACE_FONT_FAMILY,
   htmlLabels: false,
   themeVariables: MERMAID_THEME_VARIABLES,
   themeCSS: MERMAID_THEME_CSS,

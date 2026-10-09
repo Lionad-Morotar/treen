@@ -1,4 +1,4 @@
-import { pickCopyTarget } from '../selection'
+import { pickCopyTarget, pickTargetForDisplay } from '../selection'
 import { createOcrReader, type OcrBlock, type OcrEngine } from './ocr'
 import type { FreezeLogger, SelectionSource } from '../freeze/controller'
 import type { Point, Rect } from '../freeze/geometry'
@@ -36,13 +36,19 @@ export interface TranslateSelectionDeps {
  *
  * 目标选区经 pickCopyTarget 与拷贝同源，但要求确为锁定选区：翻译整屏既非用户意图，
  * 又会把无关文字一并送去翻译与计费。无锁定即跳过，交给调用方决定是否提示。
+ *
+ * 可选传入 displayId 指定在哪块屏触发：锁定轮询在触发时就已知是哪块屏，不能再退化到
+ * 「光标在哪译哪」（多屏各有锁定时那是错的屏）。不传则维持按光标推断的旧语义。
  */
 export function createTranslateSelection(deps: TranslateSelectionDeps) {
   const readOcr = createOcrReader({ recognize: deps.recognize })
 
-  return async (): Promise<TranslateOutcome> => {
+  return async (displayId?: number): Promise<TranslateOutcome> => {
     const sources = await deps.readSources()
-    const target = pickCopyTarget(sources, deps.pointer?.())
+    const target =
+      displayId === undefined
+        ? pickCopyTarget(sources, deps.pointer?.())
+        : pickTargetForDisplay(sources, displayId)
     if (target === null) {
       deps.logger?.warn('翻译跳过：冻结态没有可用的覆盖窗')
       return { kind: 'skipped', reason: 'no-window' }

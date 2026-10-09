@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@treen/ipc": "workspace:*",
+    "@treen/shared": "workspace:*",
     "jsdom": "^30.1.2",
     "mermaid": "^12.1.0",
     "nuxt": "~4.5.2",

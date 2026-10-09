@@ -10,6 +10,7 @@ import type {
 import type { ShortcutRegistrar } from './shortcuts'
 import { freezeWindowOptions } from './window-options'
 import type { Candidate } from '../highlight/candidates'
+import type { OverlayPlan } from '../overlay/layout'
 
 /**
  * Electron 运行时绑定层：把纯逻辑控制器需要的四类能力（取屏、截屏、建窗、快捷键）
@@ -125,6 +126,7 @@ export function createOverlayWindowFactory(
       // 尚未定义），故先暂存，待加载完成再投递；后到的覆盖先到的，只保留最新一份。
       let loaded = false
       let pendingCandidates: readonly Candidate[] | null = null
+      let pendingOverlay: OverlayPlan | null = null
 
       function injectCandidates(): void {
         if (!loaded || pendingCandidates === null || window.isDestroyed()) {
@@ -137,6 +139,21 @@ export function createOverlayWindowFactory(
           .catch((error: unknown) => {
             logger?.warn(
               `候选区域注入失败：${error instanceof Error ? error.message : String(error)}`,
+            )
+          })
+      }
+
+      function injectOverlay(): void {
+        if (!loaded || pendingOverlay === null || window.isDestroyed()) {
+          return
+        }
+        const payload = JSON.stringify(pendingOverlay)
+        pendingOverlay = null
+        void window.webContents
+          .executeJavaScript(`window.__treenSetOverlay(${payload})`)
+          .catch((error: unknown) => {
+            logger?.warn(
+              `覆盖计划注入失败：${error instanceof Error ? error.message : String(error)}`,
             )
           })
       }
@@ -159,6 +176,7 @@ export function createOverlayWindowFactory(
             }
           })
         injectCandidates()
+        injectOverlay()
       })
       void window.loadFile(overlayPath).catch((error: unknown) => {
         // 窗口在加载途中被 destroy（瞬时退出）时 rejection 属预期噪音，只在窗口仍活着时告警。
@@ -181,6 +199,14 @@ export function createOverlayWindowFactory(
           const locked = await readLockedRegion(window)
           // 等渲染层答复期间窗口可能已被拆掉（用户按了 Escape），此时这一屏已无意义。
           return window.isDestroyed() ? null : { display, frame, locked }
+        },
+        readLocked: () => readLockedRegion(window),
+        setOverlay: (plan) => {
+          if (window.isDestroyed()) {
+            return
+          }
+          pendingOverlay = plan
+          injectOverlay()
         },
         focus: () => {
           if (window.isDestroyed()) {
