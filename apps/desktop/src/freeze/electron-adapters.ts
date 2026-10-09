@@ -1,6 +1,7 @@
 import { BrowserWindow, desktopCapturer, globalShortcut, screen } from 'electron'
 import type { NativeImage } from 'electron'
 import type { Point, Rect, Size } from './geometry'
+import { captureFrames as projectCaptureFrames, type ScreenGrabber } from './frame-capture'
 import type {
   FreezeFrame,
   FreezeLogger,
@@ -48,29 +49,22 @@ export function pointOfInterest(): Point {
   return screen.getCursorScreenPoint()
 }
 
+/** 真实抓屏源枚举器：唯一把 desktopCapturer 绑进帧投影链的地方。 */
+const grabDesktopScreens: ScreenGrabber = (thumbnailSize) =>
+  desktopCapturer.getSources({ types: ['screen'], thumbnailSize })
+
 /**
  * 逐屏抓取静态位图。thumbnailSize 由几何层按物理像素规划后传入，保证各屏不低于原生分辨率。
- * display_id 为空串的是镜像/聚合源，无法定位到具体屏，直接丢弃。
+ *
+ * 抓屏方式可注入（缺省走真实 desktopCapturer）：回放/测试传一个「从固定图片产出源」的假实现，
+ * 就能在不起 GUI 的前提下把「帧从哪来」这段也纳入可执行验收；投影逻辑本身在 frame-capture
+ * 的纯函数里，与 Electron 无关。真实运行时永远走缺省，注入只发生在测试与回放路径。
  */
-export async function captureFrames(thumbnailSize: Size): Promise<FreezeFrame[]> {
-  let sources: Electron.DesktopCapturerSource[]
-  try {
-    sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize })
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    throw new Error(`截屏失败：无法枚举屏幕源（${reason}）`, { cause: error })
-  }
-  return sources
-    .filter((source) => source.display_id !== '')
-    .map((source) => {
-      const size = source.thumbnail.getSize()
-      return {
-        id: source.id,
-        displayId: source.display_id,
-        size: size.width > 0 && size.height > 0 ? size : null,
-        dataUrl: source.thumbnail.toDataURL(),
-      }
-    })
+export function captureFrames(
+  thumbnailSize: Size,
+  grab: ScreenGrabber = grabDesktopScreens,
+): Promise<FreezeFrame[]> {
+  return projectCaptureFrames(thumbnailSize, grab)
 }
 
 /** 判断值是不是一个几何矩形；读取面是跨进程边界，拿到的东西先验形状再用。 */

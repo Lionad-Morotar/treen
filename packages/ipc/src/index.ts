@@ -22,7 +22,7 @@ export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]
 export const RENDER_SITE_ROUTES = {
   /** POST { source } → { svg, width, height } 或 { error }；源码不合法时不渲染，报错带原因 */
   render: '/api/render',
-  /** GET → { status: 'ok', version }，用于壳层确认渲染站已就绪 */
+  /** GET → { ok: true, service, version }，用于壳层确认渲染站已就绪 */
   health: '/api/health',
 } as const
 
