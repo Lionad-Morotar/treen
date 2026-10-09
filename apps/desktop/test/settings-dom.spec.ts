@@ -25,6 +25,7 @@ interface KeyEventInit {
   ctrlKey?: boolean
   altKey?: boolean
   shiftKey?: boolean
+  repeat?: boolean
 }
 
 interface WindowLike {
@@ -217,6 +218,48 @@ describe('settings.html 的冻结热键捕获', () => {
     )
     expect(flagged).toBe(true)
     expect(bridge.set).not.toHaveBeenCalled()
+  })
+
+  it('只按下修饰键是输入过程中的常态，既不写回也不报错', async () => {
+    const bridge = bridgeWith('Alt+T')
+    const window = load(bridge)
+    await waitUntil(() => field(window, HOTKEY).value === 'Alt+T')
+
+    dispatchKeydown(window, HOTKEY, { key: 'Meta', metaKey: true })
+    dispatchKeydown(window, HOTKEY, { key: 'Shift', shiftKey: true })
+
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(bridge.set).not.toHaveBeenCalled()
+    expect(field(window, 'settings-status').getAttribute('data-kind')).not.toBe('error')
+  })
+
+  it('空格与加号翻成 accelerator 认得的键名', async () => {
+    const bridge = bridgeWith('Alt+T')
+    const window = load(bridge)
+    await waitUntil(() => field(window, HOTKEY).value === 'Alt+T')
+
+    dispatchKeydown(window, HOTKEY, { key: ' ', metaKey: true })
+    const spaced = await waitUntil(() => bridge.set.mock.calls.length > 0)
+    expect(spaced).toBe(true)
+    expect(bridge.set).toHaveBeenCalledWith({ freezeAccelerator: 'Command+Space' })
+
+    dispatchKeydown(window, HOTKEY, { key: '+', metaKey: true })
+    await waitUntil(() => bridge.set.mock.calls.length > 1)
+    expect(bridge.set).toHaveBeenLastCalledWith({ freezeAccelerator: 'Command+Plus' })
+  })
+
+  it('按住不放的键盘重复不反复落盘', async () => {
+    const bridge = bridgeWith('Alt+T')
+    const window = load(bridge)
+    await waitUntil(() => field(window, HOTKEY).value === 'Alt+T')
+
+    dispatchKeydown(window, HOTKEY, { key: 'k', metaKey: true })
+    await waitUntil(() => bridge.set.mock.calls.length === 1)
+    dispatchKeydown(window, HOTKEY, { key: 'k', metaKey: true, repeat: true })
+    dispatchKeydown(window, HOTKEY, { key: 'k', metaKey: true, repeat: true })
+
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(bridge.set).toHaveBeenCalledTimes(1)
   })
 })
 
