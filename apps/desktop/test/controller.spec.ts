@@ -622,6 +622,38 @@ describe('freeze controller: 锁定跳变触发翻译（拉取式轮询）', () 
     expect(onRegionLocked).toHaveBeenCalledTimes(1)
   })
 
+  it('读锁定失败不当成未锁定：既不重复触发，也不逐轮刷日志', async () => {
+    const onRegionLocked = vi.fn()
+    const { harness, clock } = await frozenHarness({ onRegionLocked, displays: [primary] })
+    const record = harness.windows.records[0]!
+    const handle = record.handle
+    record.locked = { x: 10, y: 20, width: 30, height: 40 }
+    // 一轮轮询是异步的（且未读完时下一 tick 会被折叠），跨一个宏任务再断言才落到稳定态。
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+    clock.tick()
+    await settle()
+    expect(onRegionLocked).toHaveBeenCalledTimes(1)
+
+    // 注入原语抖动：读失败若记成「这一屏没锁」，下一轮读到同一块锁就满足 null → 矩形的跳变判据，
+    // 同一块区域会被重复 OCR 与重复的付费翻译；连续失败也只该在开头记一条日志。
+    vi.mocked(handle.readLocked).mockRejectedValue(new Error('注入原语未就绪'))
+    clock.tick()
+    await settle()
+    clock.tick()
+    await settle()
+
+    expect(onRegionLocked).toHaveBeenCalledTimes(1)
+    expect(harness.warn.mock.calls.filter(([message]) => String(message).includes('读显示器'))).toHaveLength(1)
+
+    // 读恢复后仍不该把同一块锁当成新的跳变。
+    vi.mocked(handle.readLocked).mockImplementation(async () => record.locked)
+    clock.tick()
+    await settle()
+
+    expect(onRegionLocked).toHaveBeenCalledTimes(1)
+  })
+
   it('换到另一块锁定视为新选择，再触发一次', async () => {
     const onRegionLocked = vi.fn()
     const { harness, clock } = await frozenHarness({ onRegionLocked })

@@ -170,6 +170,8 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
   const lastLocks = new Map<number, Rect | null>()
   /** 一次轮询尚未读完时不再叠加下一次：读动作是异步的，慢于间隔就会堆积。 */
   let polling = false
+  /** 读锁定失败的屏；失败连续发生时只警告一次，读到成功即清。 */
+  const failingReads = new Set<number>()
 
   /** 冻结期的快捷键只在冻结期存活：进入时注册、任何退出路径上释放。 */
   function releaseShortcuts(): void {
@@ -231,6 +233,10 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
    * 「跳变」定义为某屏出现了与上一轮不同的非空锁定——首次锁定（null → 矩形）与换锁
    * （矩形 A → 矩形 B）都算，反复读到同一块不算。换锁也触发是有意的：用户点了另一块区域
    * 期望的就是译那一块的译文，只认 null → 矩形会让第二次选择静默失效。
+   *
+   * 读失败**不当作未锁定**：覆盖窗的注入原语偶发失败时（页面繁忙、注入尚未就绪），把它记成
+   * null 会让下一轮读到同一块锁时满足 null → 矩形的跳变判据，同一块区域被重复 OCR 与翻译
+   * （外部模型按次计费），且整批覆盖被再注入一次。读不到就保留上一轮的已知状态，本轮不触发。
    */
   async function pollOnce(): Promise<void> {
     if (!frozen || polling) {
@@ -240,16 +246,29 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     try {
       const handles = created
       const snapshot = await Promise.all(
-        handles.map(async (handle) => ({
-          handle,
-          locked: await handle.readLocked().catch(() => null),
-        })),
+        handles.map(async (handle) => {
+          try {
+            const locked = await handle.readLocked()
+            failingReads.delete(handle.displayId)
+            return { handle, locked }
+          } catch (error) {
+            if (!failingReads.has(handle.displayId)) {
+              failingReads.add(handle.displayId)
+              const message = error instanceof Error ? error.message : String(error)
+              deps.logger?.warn(`读显示器 ${handle.displayId} 的锁定区域失败：${message}`)
+            }
+            return { handle, locked: undefined }
+          }
+        }),
       )
       // 读取在途期间可能已退出冻结：窗口已拆，不再做任何触发。
       if (!frozen) {
         return
       }
       for (const { handle, locked } of snapshot) {
+        if (locked === undefined) {
+          continue
+        }
         const previous = lastLocks.get(handle.displayId) ?? null
         lastLocks.set(handle.displayId, locked)
         if (locked !== null && !sameRect(previous, locked)) {
@@ -267,6 +286,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       return
     }
     lastLocks.clear()
+    failingReads.clear()
     lockPollHandle = timers.setInterval(() => {
       void pollOnce()
     }, lockPollIntervalMs)
@@ -278,6 +298,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       lockPollHandle = null
     }
     lastLocks.clear()
+    failingReads.clear()
   }
 
   function exit(): void {
