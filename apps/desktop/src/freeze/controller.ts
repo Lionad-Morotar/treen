@@ -64,6 +64,10 @@ export interface OverlayWindowHandle {
   readLocked(): Promise<Rect | null>
   /** 注入覆盖计划（译文与图表的落点）；窗口已销毁时实现方须静默忽略。 */
   setOverlay(plan: OverlayPlan): void
+  /** 在该屏锁定区域显示翻译 loading 扫描线（显示器相对 DIP）；窗口已销毁时实现方须静默忽略。 */
+  setLoading(region: Rect): void
+  /** 隐藏该屏的翻译 loading；窗口已销毁时实现方须静默忽略。 */
+  clearLoading(): void
   /**
    * 抓取本窗当前渲染结果中的一块（显示器相对 DIP）的 PNG 字节；窗口已失效或抓取不到像素时为 null。
    *
@@ -81,6 +85,20 @@ export interface OverlayWindowHandle {
 export interface RegionLockTarget {
   displayId: number
   region: Rect
+}
+
+/**
+ * 冻结期区域翻译动作：与拷贝的 FreezeAction 同构（trigger 带锁定目标），invalidate 语义相同。
+ *
+ * invalidate 的对象不只是结果落地——翻译链路发起时会在锁定区域显示 loading 扫描线，
+ * 冻结退出时在途那轮若不作废，扫描线与覆盖都会越过冻结态继续存在。由 exit 在此统一作废，
+ * 动作方无须感知冻结态（与拷贝两条路径同一收口）。
+ */
+export interface RegionTranslateAction {
+  /** 发起一轮；返回值不被控制器消费（轮询没有等待方），测试可直接 await。 */
+  trigger(target: RegionLockTarget): unknown
+  /** 作废该动作的全部在途轮；退出冻结时由控制器调用。 */
+  invalidate(): void
 }
 
 /** 轮询用的定时器抽象：注入是为了让控制器在测试里用确定性调度，不依赖真实时钟。 */
@@ -149,8 +167,9 @@ export interface FreezeControllerDeps {
    * 触发源是拉取式轮询而非全局快捷键：需求要的是「鼠标点击即触发」，而点击发生在渲染层，
    * 主进程没有点击时刻的协调点。轮询以「锁定从无到有 / 换了一块」为跳变判据，反复读到同一块
    * 不重复触发。返回值不被等待，同步抛错与 Promise 拒绝都收进日志，不拆掉冻结态。
+   * invalidate 由 exit 统一调（与拷贝动作同一收口）：作废在途轮并收掉它的 loading。
    */
-  onRegionLocked?: (target: RegionLockTarget) => unknown
+  onRegionLocked?: RegionTranslateAction
   /** 轮询间隔（毫秒）；缺省 DEFAULT_LOCK_POLL_INTERVAL_MS */
   lockPollIntervalMs?: number
   /** 定时器注入点；缺省用全局 setInterval / clearInterval，测试注入确定性调度 */
@@ -257,7 +276,7 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
       return
     }
     void Promise.resolve()
-      .then(() => action({ displayId, region }))
+      .then(() => action.trigger({ displayId, region }))
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         deps.logger?.warn(`显示器 ${displayId} 的翻译触发失败：${message}`)
@@ -347,6 +366,9 @@ export function createFreezeController(deps: FreezeControllerDeps): FreezeContro
     // 冻结态往剪贴板写东西。dispose 也经这里收口，不需要单独再作废一次。
     deps.copySelection?.invalidate()
     deps.copyComposite?.invalidate()
+    // 在途翻译轮同口径作废：它的 loading 扫描线会随窗口销毁消失，但语义上这条链
+    // 已经整体不再落地，不等它在下一个检查点自己发现。
+    deps.onRegionLocked?.invalidate()
     releaseShortcuts()
     closeAll(created)
     created = []

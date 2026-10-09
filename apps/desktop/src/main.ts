@@ -5,7 +5,7 @@ import {
   ShortcutManager,
   createFreezeController,
   type FreezeController,
-  type RegionLockTarget,
+  type RegionTranslateAction,
   type SelectionSource,
 } from './freeze'
 import {
@@ -125,7 +125,7 @@ async function readOverlaySources(): Promise<readonly SelectionSource[]> {
  */
 function buildRegionLockAction(
   settings: SettingsStore,
-): ((target: RegionLockTarget) => void) | undefined {
+): RegionTranslateAction | undefined {
   if (readDeepSeekKey() === undefined) {
     logger.warn('未配置 DEEPSEEK_KEY，点击翻译不启用；冻结与拷贝不受影响')
     return undefined

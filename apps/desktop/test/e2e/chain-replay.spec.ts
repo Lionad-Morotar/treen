@@ -151,6 +151,8 @@ function replayWindow(display: DisplayLike, frame: FreezeFrame): ReplayWindow {
     setOverlay: (plan) => {
       record.plan = plan
     },
+    setLoading: () => {},
+    clearLoading: () => {},
     captureComposite: async () => null,
   }
   return record

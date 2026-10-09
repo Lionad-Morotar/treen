@@ -1,5 +1,5 @@
 import type { TreenSettings } from '@treen/shared'
-import type { FreezeLogger, RegionLockTarget } from '../freeze/controller'
+import type { FreezeLogger, RegionLockTarget, RegionTranslateAction } from '../freeze/controller'
 import type { LatestGate } from '../freeze/latest-gate'
 import type { Rect } from '../freeze/geometry'
 import type { TranslateOutcome, TranslatedBlock } from '../translation/link'
@@ -20,13 +20,21 @@ import type { OverlayPlan } from './layout'
  *
  * 覆盖是整批替换，而这条链（OCR + 外部翻译 + 渲染站）耗时不短：连着点两块区域会让两条链并发，
  * 先发起的可能后完成。代次闸门按发起次序发号，过期结果不注入。
+ *
+ * loading 与链路同生命周期：确认要发起链路后立刻在锁定区域显示扫描线，链路离开的每一个
+ * 出口（落地、被更新点击取代、翻译被跳过、失败、冻结退出经 invalidate）都收掉它——
+ * 收口统一放在 finally，漏一个出口就是一条永远在扫的线。
  */
 
-/** 覆盖窗的写入面。控制器句柄是该接口的超集，装配层可直接传 `freeze.windows()`。 */
+/** 覆盖窗的控制面。控制器句柄是该接口的超集，装配层可直接传 `freeze.windows()`。 */
 export interface OverlaySink {
   displayId: number
   isDestroyed(): boolean
   setOverlay(plan: OverlayPlan): void
+  /** 在该屏锁定区域显示翻译 loading（显示器相对 DIP）；已显示时刷新位置。 */
+  setLoading(region: Rect): void
+  /** 隐藏该屏的翻译 loading；未显示时静默。 */
+  clearLoading(): void
 }
 
 /** 覆盖计划的两个开关，与设置字段同义，收窄成显式的两项以免动作层依赖完整设置形状。 */
@@ -57,7 +65,7 @@ export interface RegionLockActionDeps {
 
 export function createRegionLockAction(
   deps: RegionLockActionDeps,
-): (target: RegionLockTarget) => void {
+): RegionTranslateAction {
   async function run(target: RegionLockTarget, token: number): Promise<void> {
     const settings = deps.readSettings()
     if (!settings.translateText && !settings.translateCharts) {
@@ -65,40 +73,58 @@ export function createRegionLockAction(
       return
     }
 
-    const outcome = await deps.translate(target.displayId, { translateText: settings.translateText })
-    if (!deps.gate.isCurrent(token)) {
-      deps.logger?.info(`显示器 ${target.displayId} 的结果已被更晚的一次点击取代，丢弃`)
-      return
+    // loading 显示在目标屏的覆盖窗上：窗口不在（该屏无窗或已销毁）时链路照旧跑，
+    // 跳过与否由落地前的既有检查点裁决，这里只决定 loading 有没有落点。
+    const sink = deps.overlays().find((candidate) => candidate.displayId === target.displayId)
+    if (sink !== undefined && !sink.isDestroyed()) {
+      sink.setLoading(target.region)
     }
-    if (outcome.kind !== 'translated') {
-      deps.logger?.info(`点击翻译跳过（${outcome.reason}）：显示器 ${target.displayId}`)
-      return
-    }
+    try {
+      const outcome = await deps.translate(target.displayId, {
+        translateText: settings.translateText,
+      })
+      if (!deps.gate.isCurrent(token)) {
+        deps.logger?.info(`显示器 ${target.displayId} 的结果已被更晚的一次点击取代，丢弃`)
+        return
+      }
+      if (outcome.kind !== 'translated') {
+        deps.logger?.info(`点击翻译跳过（${outcome.reason}）：显示器 ${target.displayId}`)
+        return
+      }
 
-    const plan = await deps.compose(outcome.blocks, outcome.region, {
-      texts: settings.translateText,
-      charts: settings.translateCharts,
-    })
-    if (!deps.gate.isCurrent(token)) {
-      deps.logger?.info(`显示器 ${outcome.displayId} 的覆盖计划已过期，不注入`)
-      return
-    }
+      const plan = await deps.compose(outcome.blocks, outcome.region, {
+        texts: settings.translateText,
+        charts: settings.translateCharts,
+      })
+      if (!deps.gate.isCurrent(token)) {
+        deps.logger?.info(`显示器 ${outcome.displayId} 的覆盖计划已过期，不注入`)
+        return
+      }
 
-    const overlay = deps.overlays().find((candidate) => candidate.displayId === outcome.displayId)
-    if (overlay === undefined || overlay.isDestroyed()) {
-      deps.logger?.warn(`显示器 ${outcome.displayId} 的覆盖窗已不在，放弃覆盖`)
-      return
+      if (sink === undefined || sink.isDestroyed()) {
+        deps.logger?.warn(`显示器 ${outcome.displayId} 的覆盖窗已不在，放弃覆盖`)
+        return
+      }
+      sink.setOverlay(plan)
+      deps.logger?.info(
+        `覆盖已注入：显示器 ${outcome.displayId}，${plan.texts.length} 段译文、${plan.charts.length} 张图`,
+      )
+    } finally {
+      // loading 的全部消失时机都收敛在这一个出口：任何离开链路的方式（含抛错与被作废）
+      // 都要把扫描线收掉。窗口已销毁时不必再调——DOM 随窗口一起没了。
+      if (sink !== undefined && !sink.isDestroyed()) {
+        sink.clearLoading()
+      }
     }
-    overlay.setOverlay(plan)
-    deps.logger?.info(
-      `覆盖已注入：显示器 ${outcome.displayId}，${plan.texts.length} 段译文、${plan.charts.length} 张图`,
-    )
   }
 
-  return (target) => {
-    const token = deps.gate.begin()
-    void run(target, token).catch((error: unknown) => {
-      deps.logger?.warn(`覆盖渲染失败：${error instanceof Error ? error.message : String(error)}`)
-    })
+  return {
+    trigger: (target) => {
+      const token = deps.gate.begin()
+      void run(target, token).catch((error: unknown) => {
+        deps.logger?.warn(`覆盖渲染失败：${error instanceof Error ? error.message : String(error)}`)
+      })
+    },
+    invalidate: () => deps.gate.invalidate(),
   }
 }
