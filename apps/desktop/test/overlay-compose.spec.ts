@@ -228,6 +228,32 @@ describe('composeOverlayPlan · 图内节点文案翻译', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('节点文案翻译失败'))
   })
 
+  it('一张图只发起一次翻译调用：裁剪候选复用同一份对照表，不重译', async () => {
+    // 渲染站只认砍掉尾部正文后的源码：两个候选先后尝试，翻译却只该发生一次。
+    const sources: string[] = []
+    const render = async (source: string) => {
+      sources.push(source)
+      if (source.includes('正文')) {
+        throw new Error('Lexical error on line 3')
+      }
+      return { svg: '<svg viewBox="0 0 100 50"></svg>', intrinsic: { width: 100, height: 50 } }
+    }
+    const { translateLabels, requested } = labelTranslator({ 流程甲: 'Process A', 流程乙: 'Process B' })
+    const blocks: OverlayBlock[] = [
+      { source: 'graph LR', translation: '图声明', box: { x: 200, y: 100, width: 80, height: 20 } },
+      { source: 'A[流程甲] --> B[流程乙]', translation: '原文行', box: { x: 200, y: 125, width: 200, height: 20 } },
+      { source: '这一段紧跟图后的正文。', translation: 'Trailing prose.', box: { x: 200, y: 150, width: 200, height: 20 } },
+    ]
+
+    const plan = await composeOverlayPlan(blocks, REGION, { render, translateLabels })
+
+    expect(requested).toHaveLength(1)
+    // 译文版的完整候选被渲染站拒了，最终落地的是裁剪候选的译文版。
+    expect(sources[0]).toContain('正文')
+    expect(sources).toContain('graph LR\nA[Process A] --> B[Process B]')
+    expect(plan.charts).toHaveLength(1)
+  })
+
   it('译文让源码不合法时退回原文版本再试，图仍出来', async () => {
     // 渲染站只认原文源码：替译文版抛语法错，模拟翻译内容破坏结构。
     const sources: string[] = []

@@ -172,6 +172,20 @@ describe('createRegionLockAction：开关的门控', () => {
     expect(setOverlay).toHaveBeenCalledTimes(1)
   })
 
+  it('文本与图表关、图内文案开着：链路照样不发起（图内文案是图表的子开关，不构成独立动作）', async () => {
+    const { action, translate, compose, setOverlay } = harness({
+      settings: withSettings({ translateText: false, translateCharts: false }),
+    })
+
+    action.trigger({ displayId: 7, region: REGION })
+    await settle()
+
+    // 否则会跑一遍 OCR 再注入空计划，把上一次点击留下的覆盖清掉。
+    expect(translate).not.toHaveBeenCalled()
+    expect(compose).not.toHaveBeenCalled()
+    expect(setOverlay).not.toHaveBeenCalled()
+  })
+
   it('全部都关：一次触发什么都不做，连翻译都不发起', async () => {
     const { action, translate, compose, setOverlay, info } = harness({
       settings: withSettings({ translateText: false, translateCharts: false, translateNodeLabels: false }),

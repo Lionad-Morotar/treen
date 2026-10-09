@@ -74,20 +74,24 @@ function chartSourceCandidates(lines: readonly string[]): Array<{ source: string
 }
 
 /**
- * 产出一段候选源码的「节点文案已翻译」版本；翻译不适用（未注入、无标签、调用失败）时返回 null，
- * 调用方照常用原文尝试。翻译结果只改标签文字、不动行结构，故不改变候选覆盖的行数。
+ * 一张图的「标签 → 译文」对照表；翻译不适用（未注入、无标签、调用失败）时为 null，
+ * 候选照常用原文。标签集合取首个候选（全区域行）——后续候选是它的裁剪子集，
+ * 一张图只需一次外部调用，裁剪候选不必重译。
  */
-async function translatedChartSource(
-  source: string,
+async function chartLabelLookup(
+  sources: readonly string[],
   translateLabels: ((labels: readonly string[]) => Promise<string[]>) | undefined,
   logger?: { warn(message: string): void; info(message: string): void },
-): Promise<string | null> {
-  if (translateLabels === undefined) {
+): Promise<Map<string, string | null> | null> {
+  if (translateLabels === undefined || sources.length === 0) {
     return null
   }
   try {
-    const labels = collectNodeLabels(source)
-    // 一条节点标签都没有（纯连线图）：那次外部调用电省下。
+    // 候选按「全区域 → 砍尾」排列，首个是超集。图后紧跟正文时候选里会混入正文行，
+    // 其中的括号文本可能被收进标签集合（白付几个 token），但替换只作用于最终渲染成功的
+    // 候选源码，不会把译文写进产物；消除这笔浪费要改标签提取的范围语义，归后续切片。
+    const labels = collectNodeLabels(sources[0] ?? '')
+    // 一条节点标签都没有（纯连线图）：那次外部调用也省下。
     if (labels.length === 0) {
       return null
     }
@@ -96,8 +100,7 @@ async function translatedChartSource(
     if (translations.length !== labels.length) {
       throw new Error(`节点文案译文 ${translations.length} 条与原文 ${labels.length} 条不一致`)
     }
-    const lookup = new Map(labels.map((label, index) => [label, translations[index] ?? null]))
-    return mapNodeLabels(source, (label) => lookup.get(label) ?? null).output
+    return new Map(labels.map((label, index) => [label, translations[index] ?? null]))
   } catch (error) {
     logger?.warn(
       `节点文案翻译失败，图用原文渲染：${error instanceof Error ? error.message : String(error)}`,
@@ -142,11 +145,16 @@ async function composeCharts(
 
     // 尝试序列：每个候选先试「节点文案已翻译」的版本，渲染站拒了再退回原文版本——
     // 翻译模型返回的内容可能让源码不合法（括号、引号），图不能因译文而消失。
+    // 全部候选共享一次翻译调用（对照表按首个候选的超集建立）。
+    const candidateSources = chartSourceCandidates(lines)
+    const lookup = await chartLabelLookup(candidateSources.map((attempt) => attempt.source), translateLabels, logger)
     const attempts: Array<{ source: string; lineCount: number }> = []
-    for (const attempt of chartSourceCandidates(lines)) {
-      const translated = await translatedChartSource(attempt.source, translateLabels, logger)
-      if (translated !== null) {
-        attempts.push({ source: translated, lineCount: attempt.lineCount })
+    for (const attempt of candidateSources) {
+      if (lookup !== null) {
+        attempts.push({
+          source: mapNodeLabels(attempt.source, (label) => lookup.get(label) ?? null).output,
+          lineCount: attempt.lineCount,
+        })
       }
       attempts.push(attempt)
     }

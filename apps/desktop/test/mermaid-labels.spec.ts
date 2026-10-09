@@ -35,8 +35,10 @@ describe('collectNodeLabels · 提取', () => {
     expect(collectNodeLabels('%% A[这是注释]\nA[真的] --> B')).toEqual(['真的'])
   })
 
-  it('未收窄的括号变体不命中：平行四边形与双花', () => {
+  it('未收窄的括号变体不命中：平行四边形、双花、子例程与圆柱', () => {
     expect(collectNodeLabels('A[/斜的/] --> B{{六角}}')).toEqual([])
+    expect(collectNodeLabels('A[[子例程]] --> B')).toEqual([])
+    expect(collectNodeLabels('A[(圆柱)] --> B')).toEqual([])
   })
 
   it('纯连线与声明行无标签', () => {

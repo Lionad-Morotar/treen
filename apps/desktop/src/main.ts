@@ -146,8 +146,8 @@ function buildRegionLockAction(
       composeOverlayPlan(blocks, region, {
         // 图表开关关闭时不注入渲染方：整段 mermaid 检测与渲染都不发生，而不是渲染完再丢弃。
         render: options.charts ? render : undefined,
-        // 节点文案开关同理：关时图用原文渲染，不发起那次外部翻译调用。
-        translateLabels: options.nodeLabels ? translate : undefined,
+        // 节点文案是图表的子开关：图不渲染时翻译没有落点，一并豁免那次外部调用。
+        translateLabels: options.charts && options.nodeLabels ? translate : undefined,
         texts: options.texts,
         logger,
       }),

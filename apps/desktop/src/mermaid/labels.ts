@@ -49,10 +49,12 @@ function matchLabel(line: string, pos: number): LabelMatch | null {
   }
   const closer = opener === '[' ? ']' : opener === '(' ? ')' : '}'
 
-  // 平行四边形 `[/…/]`、`[\…\]` 与双花 `{{…}}` 不在本切片范围，让它们保持不命中。
+  // 平行四边形 `[/…/]`、`[\…\]`、圆柱 `[(…)]`、双花 `{{…}}` 与子例程 `[[…]]` 不在本切片范围，
+  // 让它们保持不命中（认得的形态与替换行为必须同步收窄，否则注释声称的范围是假的）。
   const next = line[idEnd + 1] ?? ''
   if (opener === '(' && next === opener && line[idEnd + 2] === opener) return null
-  if (opener === '{' && next === opener) return null
+  if ((opener === '{' || opener === '[') && next === opener) return null
+  if (opener === '[' && next === '(') return null
   if ((opener === '[' || opener === '(') && (next === '/' || next === '\\')) return null
 
   // 连续 opener 计数（`(())` 为 2）；closer 不在内容扫描里消费，统一留给闭合段，
