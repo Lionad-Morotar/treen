@@ -122,6 +122,43 @@
       .treen-overlay-chart svg {
         display: block;
       }
+
+      /*
+        翻译 loading 层：锁定区域上一条自上而下循环扫过的扫描线（DOM/CSS，不引入 WebGL）。
+        层由主进程按锁定区域摆位（显示器相对 DIP），显隐翻 hidden；线是伪元素，位移用 top
+        百分比动画——transform 的百分比参照线自身（1px 线位移 1px），按区域高度自适应只能靠
+        包含块百分比。配色取锁定色同一变量，不另起一套。
+      */
+      #treen-loading {
+        position: absolute;
+        pointer-events: none;
+      }
+
+      #treen-loading[hidden] {
+        display: none;
+      }
+
+      #treen-loading::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, var(--treen-locked), transparent);
+        box-shadow: 0 0 12px var(--treen-locked);
+        animation: treen-loading-scan 2s linear infinite;
+      }
+
+      @keyframes treen-loading-scan {
+        from {
+          top: 0;
+        }
+
+        to {
+          top: calc(100% - 1px);
+        }
+      }
     </style>
   </head>
   <body>
@@ -131,6 +168,8 @@
     <div id="treen-candidates" data-testid="freeze-candidates"></div>
     <!-- 覆盖渲染层：译文与 mermaid 图的落点，内容由主进程随翻译结果注入 -->
     <div id="treen-overlay" data-testid="freeze-overlay"></div>
+    <!-- 翻译 loading 层：点击锁定后到覆盖落地前，主进程把扫描线摆到锁定区域上 -->
+    <div id="treen-loading" data-testid="freeze-loading" hidden></div>
     <script>
       // 主进程在截图就绪后经 executeJavaScript 调用。挂在 window 上而非模块作用域，
       // 才能被 executeJavaScript 的全局求值命中；source 是 PNG data URL。
@@ -345,6 +384,30 @@
           }
           overlayLayer.appendChild(box)
         }
+      }
+
+      /**
+       * 翻译 loading 的显隐：主进程在翻译链路发起时把层摆到锁定区域上，链路终结时送 null。
+       * rect 与锁定区域同真源（轮询读回的锁定几何），过期请求在主进程侧已被代次闸门丢弃，
+       * 这里只负责 faithfully 摆位与显隐；形状不合的 rect 一律当隐藏处理，不残留旧位置。
+       */
+      var loadingLayer = document.getElementById('treen-loading')
+      window.__treenSetLoading = function (rect) {
+        var valid =
+          rect &&
+          typeof rect.x === 'number' &&
+          typeof rect.y === 'number' &&
+          typeof rect.width === 'number' &&
+          typeof rect.height === 'number'
+        if (!valid) {
+          loadingLayer.hidden = true
+          return
+        }
+        loadingLayer.style.left = rect.x + 'px'
+        loadingLayer.style.top = rect.y + 'px'
+        loadingLayer.style.width = rect.width + 'px'
+        loadingLayer.style.height = rect.height + 'px'
+        loadingLayer.hidden = false
       }
 
       /**
