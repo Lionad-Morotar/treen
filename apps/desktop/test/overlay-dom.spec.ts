@@ -35,6 +35,8 @@ interface ElementList {
 interface ElementLike {
   style: StyleLike
   textContent: string | null
+  /** html.hidden 是显隐开关：loading 层的显示面就是它的翻转 */
+  hidden: boolean
   getAttribute(name: string): string | null
   querySelector(selector: string): ElementLike | null
   querySelectorAll(selector: string): ElementList
@@ -55,11 +57,13 @@ interface WindowLike {
   document: DocumentLike
   getComputedStyle(element: ElementLike): ComputedStyleLike
   __treenSetOverlay(plan: unknown): void
+  __treenSetLoading(rect: unknown): void
+  __treenClearLoading(rect: unknown): void
 }
 
 const OVERLAY_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay.html')
 
-function loadOverlay(): { layer: ElementLike; window: WindowLike } {
+function loadOverlay(): { layer: ElementLike; loading: ElementLike; window: WindowLike } {
   const html = readFileSync(OVERLAY_PATH, 'utf8')
   // 变量中转：本地 jsdom 声明只列了 pretendToBeVisual，这里额外开 runScripts 让内联脚本执行。
   const options = { runScripts: 'dangerously' as const, pretendToBeVisual: true }
@@ -69,7 +73,11 @@ function loadOverlay(): { layer: ElementLike; window: WindowLike } {
   if (layer === null) {
     throw new Error('overlay.html 缺少 #treen-overlay 容器')
   }
-  return { layer, window }
+  const loading = window.document.querySelector('[data-testid="freeze-loading"]')
+  if (loading === null) {
+    throw new Error('overlay.html 缺少 #treen-loading 容器')
+  }
+  return { layer, loading, window }
 }
 
 const CHART_SVG =
@@ -250,5 +258,89 @@ describe('overlay.html 的覆盖渲染', () => {
     window.__treenSetOverlay(null)
 
     expect(layer.children.length).toBe(0)
+  })
+})
+
+describe('overlay.html 的翻译 loading 层', () => {
+  const RECT = { x: 12, y: 34, width: 200, height: 100 }
+
+  it('loading 层在页面里唯一且初始隐藏', () => {
+    const { loading, window } = loadOverlay()
+
+    expect(loading.hidden).toBe(true)
+    expect(window.document.querySelectorAll('[data-testid="freeze-loading"]').length).toBe(1)
+  })
+
+  it('显示时把层摆到给定区域并解除隐藏', () => {
+    const { loading, window } = loadOverlay()
+
+    window.__treenSetLoading(RECT)
+
+    expect(loading.hidden).toBe(false)
+    expect(loading.style.left).toBe('12px')
+    expect(loading.style.top).toBe('34px')
+    expect(loading.style.width).toBe('200px')
+    expect(loading.style.height).toBe('100px')
+  })
+
+  it('自己的区域收线后隐藏且不残留，重新显示可复用同一层', () => {
+    const { loading, window } = loadOverlay()
+
+    window.__treenSetLoading(RECT)
+    window.__treenClearLoading(RECT)
+    expect(loading.hidden).toBe(true)
+
+    const moved = { x: 0, y: 0, width: 50, height: 60 }
+    window.__treenSetLoading(moved)
+    expect(loading.hidden).toBe(false)
+    expect(loading.style.width).toBe('50px')
+  })
+
+  it('旧区域的收线动不到新区域正在扫的线（同屏连点竞态）', () => {
+    const { loading, window } = loadOverlay()
+
+    window.__treenSetLoading(RECT)
+    const moved = { x: 0, y: 0, width: 50, height: 60 }
+    window.__treenSetLoading(moved)
+
+    window.__treenClearLoading(RECT)
+    expect(loading.hidden).toBe(false)
+    expect(loading.style.width).toBe('50px')
+
+    window.__treenClearLoading(moved)
+    expect(loading.hidden).toBe(true)
+  })
+
+  it('未显示时收线是静默 no-op', () => {
+    const { loading, window } = loadOverlay()
+
+    window.__treenClearLoading(RECT)
+    expect(loading.hidden).toBe(true)
+  })
+
+  it('形状不合的 rect 一律当隐藏处理，不把坏值写进样式', () => {
+    const { loading, window } = loadOverlay()
+
+    window.__treenSetLoading(RECT)
+    window.__treenSetLoading({ x: 1, y: 2 })
+    expect(loading.hidden).toBe(true)
+
+    window.__treenSetLoading('garbage')
+    expect(loading.hidden).toBe(true)
+
+    // 坏值没有污染上一次的好位置：重新显示直接落新几何。
+    window.__treenSetLoading(RECT)
+    expect(loading.style.left).toBe('12px')
+    expect(loading.hidden).toBe(false)
+  })
+
+  it('连续显示不同区域只更新几何，不产生第二个层', () => {
+    const { loading, window } = loadOverlay()
+
+    window.__treenSetLoading(RECT)
+    window.__treenSetLoading({ x: 1, y: 1, width: 9, height: 9 })
+
+    expect(window.document.querySelectorAll('[data-testid="freeze-loading"]').length).toBe(1)
+    expect(loading.style.left).toBe('1px')
   })
 })

@@ -46,6 +46,7 @@ import {
  * - overlay.html 能被 loadFile 加载，__treenSetFrame 帧注入原语可用
  * - 候选区域的悬停高亮：透明边框占位、命中只换色不位移、离开全部候选即无高亮
  * - 点击锁定选区与主进程的拉取面：__treenGetLocked 跨进程读回锁定几何
+ * - 翻译 loading 扫描线：__treenSetLoading 摆层显隐、几何落位、伪元素上的循环扫描动画
  * - 边缘检测全链路：真 PNG 解码 → 通道序搬运 → detectBorders 检出预期矩形
  * - 选区拷贝全链路：真 nativeImage 裁剪 → 真剪贴板写入 → 从剪贴板读回像素校验尺度与 alpha
  *
@@ -500,6 +501,97 @@ async function verifySelectionLock(window: BrowserWindow | null): Promise<void> 
   )
 }
 
+/** loading 层探针：读回层的显隐、几何、归属区域与扫描线动画（伪元素取 getComputedStyle）。 */
+const LOADING_PROBE = `(() => {
+  const layers = [...document.querySelectorAll('[data-testid="freeze-loading"]')]
+  const layer = layers[0]
+  return {
+    count: layers.length,
+    hidden: layer ? layer.hidden : null,
+    left: layer ? layer.style.left : null,
+    top: layer ? layer.style.top : null,
+    width: layer ? layer.style.width : null,
+    height: layer ? layer.style.height : null,
+    animationName: layer ? getComputedStyle(layer, '::after').animationName : null,
+    animationDuration: layer ? getComputedStyle(layer, '::after').animationDuration : null,
+    setterType: typeof window.__treenSetLoading,
+    clearerType: typeof window.__treenClearLoading,
+  }
+})()`
+
+interface LoadingSnapshot {
+  count: number
+  hidden: boolean | null
+  left: string | null
+  top: string | null
+  width: string | null
+  height: string | null
+  animationName: string | null
+  animationDuration: string | null
+  setterType: string
+  clearerType: string
+}
+
+/**
+ * 翻译 loading 扫描线的真链路：锁定后显式摆层，断言层唯一、几何落位、
+ * 扫描动画真的挂在伪元素上。CSS 动画是否在跑（animationName 与时长）只有真渲染引擎
+ * 说得算，jsdom 对它结构性失明。
+ */
+async function verifyLoadingScan(window: BrowserWindow | null): Promise<void> {
+  if (window === null || window.isDestroyed()) {
+    check('loading 冒烟有可用的覆盖窗', false)
+    return
+  }
+
+  const snapshot = async (): Promise<LoadingSnapshot> =>
+    (await window.webContents.executeJavaScript(LOADING_PROBE)) as LoadingSnapshot
+
+  const initial = await snapshot()
+  check('渲染层暴露 __treenSetLoading', initial.setterType === 'function', initial.setterType)
+  check('渲染层暴露 __treenClearLoading', initial.clearerType === 'function', initial.clearerType)
+  check('loading 层在页面里唯一且初始隐藏', initial.count === 1 && initial.hidden === true, initial)
+
+  // 走真实时序：先注入候选并点击锁定，loading 摆到的就是锁定选区本身。
+  await window.webContents.executeJavaScript(
+    `window.__treenSetCandidates(${JSON.stringify(PROBE_CANDIDATES)})`,
+  )
+  await window.webContents.executeJavaScript(clickAt(100, 80))
+  await window.webContents.executeJavaScript(
+    `window.__treenSetLoading(${JSON.stringify(INNER)})`,
+  )
+  const shown = await snapshot()
+  check('显示后层解除隐藏', shown.hidden === false, shown)
+  check(
+    '层几何等于锁定区域的显示器相对 DIP',
+    shown.left === `${INNER.x}px` &&
+      shown.top === `${INNER.y}px` &&
+      shown.width === `${INNER.width}px` &&
+      shown.height === `${INNER.height}px`,
+    { left: shown.left, top: shown.top, width: shown.width, height: shown.height },
+  )
+  check(
+    '扫描线动画挂在伪元素上并循环播放（DOM/CSS 而非 WebGL）',
+    shown.animationName === 'treen-loading-scan' && shown.animationDuration === '2s',
+    { animationName: shown.animationName, animationDuration: shown.animationDuration },
+  )
+
+  // 同屏连点的竞态：层已改摆到外层区域后，旧区域的收线不得动到新区域的线。
+  await window.webContents.executeJavaScript(
+    `window.__treenSetLoading(${JSON.stringify(OUTER)})`,
+  )
+  await window.webContents.executeJavaScript(
+    `window.__treenClearLoading(${JSON.stringify(INNER)})`,
+  )
+  const raced = await snapshot()
+  check('旧区域的收线不动新区域正在扫的线', raced.hidden === false && raced.left === `${OUTER.x}px`, raced)
+
+  await window.webContents.executeJavaScript(
+    `window.__treenClearLoading(${JSON.stringify(OUTER)})`,
+  )
+  const cleared = await snapshot()
+  check('自己的区域收线后层回到隐藏，无残留', cleared.count === 1 && cleared.hidden === true, cleared)
+}
+
 /**
  * 主进程侧的拉取面：真跑一次 executeJavaScript 跨进程读回渲染层锁定的选区。
  * 单测对这个通道是结构性盲区（替身里没有真的渲染层），它只有真链路能证明。
@@ -585,6 +677,8 @@ async function verifyFreezeShortcutLifecycle(): Promise<void> {
           readLocked: async () => null,
           captureComposite: async () => null,
           setOverlay: () => {},
+          setLoading: () => {},
+          clearLoading: () => {},
         }
       },
     },
@@ -1277,6 +1371,7 @@ app.whenReady().then(async () => {
     const window = await verifyOverlayWindow()
     await verifyCandidateHighlight(window)
     await verifySelectionLock(window)
+    await verifyLoadingScan(window)
     await verifyLockedRegionPull(window)
     await verifyEdgeDetection()
     await verifySystemWindows()

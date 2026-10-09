@@ -160,9 +160,11 @@ export function createOverlayWindowFactory(
 
       // 候选区域由控制器后台算好后送来，抵达时机可能早于 overlay.html 就绪（页面的注入原语
       // 尚未定义），故先暂存，待加载完成再投递；后到的覆盖先到的，只保留最新一份。
+      // loading 的显隐是同族问题：显示可能落在页面加载完成之前，同形态暂存，最新意图 wins。
       let loaded = false
       let pendingCandidates: readonly Candidate[] | null = null
       let pendingOverlay: OverlayPlan | null = null
+      let pendingLoading: { visible: boolean; region: Rect | null } | null = null
 
       function injectCandidates(): void {
         if (!loaded || pendingCandidates === null || window.isDestroyed()) {
@@ -175,6 +177,25 @@ export function createOverlayWindowFactory(
           .catch((error: unknown) => {
             logger?.warn(
               `候选区域注入失败：${error instanceof Error ? error.message : String(error)}`,
+            )
+          })
+      }
+
+      function injectLoading(): void {
+        if (!loaded || pendingLoading === null || window.isDestroyed()) {
+          return
+        }
+        const command = pendingLoading
+        pendingLoading = null
+        // 收线带区域：渲染层只在「层上正是这个区域」时隐藏，旧链的收线动不到新链的线。
+        const expression = command.visible
+          ? `window.__treenSetLoading(${JSON.stringify(command.region)})`
+          : `window.__treenClearLoading(${JSON.stringify(command.region)})`
+        void window.webContents
+          .executeJavaScript(expression)
+          .catch((error: unknown) => {
+            logger?.warn(
+              `loading 注入失败：${error instanceof Error ? error.message : String(error)}`,
             )
           })
       }
@@ -213,6 +234,7 @@ export function createOverlayWindowFactory(
           })
         injectCandidates()
         injectOverlay()
+        injectLoading()
       })
       void window.loadFile(overlayPath).catch((error: unknown) => {
         // 窗口在加载途中被 destroy（瞬时退出）时 rejection 属预期噪音，只在窗口仍活着时告警。
@@ -253,6 +275,20 @@ export function createOverlayWindowFactory(
           }
           pendingOverlay = plan
           injectOverlay()
+        },
+        setLoading: (region) => {
+          if (window.isDestroyed()) {
+            return
+          }
+          pendingLoading = { visible: true, region }
+          injectLoading()
+        },
+        clearLoading: (region) => {
+          if (window.isDestroyed()) {
+            return
+          }
+          pendingLoading = { visible: false, region }
+          injectLoading()
         },
         focus: () => {
           if (window.isDestroyed()) {
