@@ -34,8 +34,9 @@ export const RENDER_SITE_ROUTES = {
  * 渲染站的开发期端点：上传图片跑 OCR、翻译、图表装配，供 `/dev/pipeline` 调试页消费。
  *
  * 与 `RENDER_SITE_ROUTES` 分开成表是因为两者的可用性契约不同：后者是生产契约（壳层依赖它，
- * 改名即断链），前者只在 dev 环境注册、非 dev 一律 404——混在一张表里会让调用方误以为
- * 这些端点在生产也可用。
+ * 改名即断链），前者三条只在 dev 环境可用、非 dev 一律 404。可用性是纯运行时的门禁而非注册
+ * 与否——生产产物的路由表里照样有这三条，404 是请求进来后在 `server/utils/dev-gate.ts` 决定的，
+ * 按路由表查「生产为什么 404」会查错方向。
  */
 export const RENDER_SITE_DEV_ROUTES = {
   /** POST { image } → { blocks, elapsedMs } */
