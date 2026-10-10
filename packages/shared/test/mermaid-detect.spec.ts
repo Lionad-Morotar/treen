@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   detectMermaidBlocks,
@@ -8,10 +6,12 @@ import {
   isDiagramDeclaration,
   looksLikeStatementLine,
 } from '../src/mermaid/detect'
-import { PROSE_MENTIONING_GRAPH, SCREENSHOT_OCR_ROI, SCREENSHOT_SOURCE } from './mermaid-fixtures'
-
-/** S14 真机缺陷样本：OCR 完全没认出声明行的 flowchart（含垃圾行与各类箭头劣化）。 */
-const BUG_OCR_SAMPLE = readFileSync(join(import.meta.dirname, 'fixtures/ocr-graph-missing-declaration.txt'), 'utf8')
+import {
+  BUG_OCR_SAMPLE,
+  PROSE_MENTIONING_GRAPH,
+  SCREENSHOT_OCR_ROI,
+  SCREENSHOT_SOURCE,
+} from './mermaid-fixtures'
 
 describe('isDiagramDeclaration', () => {
   it('接受行首图声明，容忍方向缩写与关键字之间的空格缺失', () => {
