@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "共享配置层：环境读取与日志脱敏",
+  "description": "共享层：环境读取、日志脱敏与 OCR / 翻译的纯逻辑",
   "main": "./src/index.ts",
   "exports": {
     ".": {
@@ -13,12 +13,17 @@
     "./text-metrics": {
       "types": "./src/text-metrics.ts",
       "default": "./src/text-metrics.ts"
+    },
+    "./translation": {
+      "types": "./src/translation/index.ts",
+      "default": "./src/translation/index.ts"
     }
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "dotenv": "^18.0.6"
+    "dotenv": "^18.0.6",
+    "mac-ocr": "^1.1.1"
   }
 }

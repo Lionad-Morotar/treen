@@ -100,6 +100,9 @@ importers:
       dotenv:
         specifier: ^18.0.6
         version: 18.0.6
+      mac-ocr:
+        specifier: ^1.1.1
+        version: 1.1.1
 
 packages:
 

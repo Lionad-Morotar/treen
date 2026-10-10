@@ -29,6 +29,8 @@ export default defineConfig({
     rollupOptions: {
       // get-windows 与 mac-ocr 必须留在产物之外：两者都在 macOS 侧靠 import.meta.url 定位随包分发的
       // 二进制，打进 CJS 产物后既没有真正的 import.meta，二进制路径也会算错。运行时经动态 import 加载。
+      // external 只管「不打进产物」，解析仍在运行时按产物位置进行：mac-ocr 虽经 shared 引入，
+      // 运行时不会去 shared 的 node_modules 找，故 desktop 侧仍须声明该依赖，否则 OCR 一动就 MODULE_NOT_FOUND。
       // mermaid 与 jsdom 同理留在产物外：mermaid 是纯 ESM 且体量巨大，jsdom 只在 Node 侧给 mermaid 垫 DOM，
       // 两者都经运行时动态 import 加载（CJS 下动态 import ESM 可用）。
       external: [

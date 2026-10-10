@@ -1,6 +1,4 @@
-// 截图翻译链路的公开面。纯逻辑与注入式编排，不触碰 Electron 运行时，故可整体被纯 Node 测试导入。
-export * from './ocr'
-export * from './mac-ocr'
-export * from './deepseek'
-export * from './deepseek-client'
+// 截图翻译链路的桌面侧公开面：纯逻辑与注入式编排已下沉到 @treen/shared，这里只把它们与
+// 依赖冻结/选区域的装配（link）一起透出，避免调用方分别记住两套入口。
+export * from '@treen/shared/translation'
 export * from './link'

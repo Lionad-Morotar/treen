@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readDeepSeekKey } from '@treen/shared'
+import { readDeepSeekKey } from '../src/env'
 import { createBatchTranslator } from '../src/translation/deepseek'
 import { createDeepSeekCompleter } from '../src/translation/deepseek-client'
 

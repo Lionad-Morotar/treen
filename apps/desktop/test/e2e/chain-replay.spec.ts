@@ -15,7 +15,7 @@ import { captureFrames, type CaptureScreenSource } from '../../src/freeze/frame-
 import { ShortcutManager, type ShortcutRegistrar } from '../../src/freeze/shortcuts'
 import type { DisplayLike, Rect, Size } from '../../src/freeze/geometry'
 import { createTranslateSelection } from '../../src/translation/link'
-import type { OcrEngine, OcrObservation } from '../../src/translation/ocr'
+import type { OcrEngine, OcrObservation } from '../../src/translation'
 import { composeOverlayPlan } from '../../src/overlay/compose'
 import { createLatestGate, createRegionLockAction } from '../../src/overlay'
 import type { OverlayPlan } from '../../src/overlay/layout'
