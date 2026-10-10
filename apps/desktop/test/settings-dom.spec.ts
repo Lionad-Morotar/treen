@@ -300,6 +300,36 @@ describe('settings.html 的冻结热键捕获', () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(bridge.set).toHaveBeenCalledTimes(1)
   })
+
+  it('死键字符（Option+Shift 组合的 event.key）不写回，并给出可见提示', async () => {
+    const bridge = bridgeWith('Alt+T')
+    const window = load(bridge)
+    await waitUntil(() => field(window, HOTKEY).value === 'Alt+T')
+
+    // macOS 上 Option+Shift+字母 的 event.key 是「˛」一类的死键字符；Electron 解析不了
+    // 拼出的 accelerator 且注册/注销它时抛异常，放行会在退出时主进程崩窗。
+    dispatchKeydown(window, HOTKEY, { key: '˛', altKey: true, shiftKey: true })
+
+    const flagged = await waitUntil(
+      () => field(window, 'settings-status').getAttribute('data-kind') === 'error',
+    )
+    expect(flagged).toBe(true)
+    expect(bridge.set).not.toHaveBeenCalled()
+  })
+
+  it('Dead 键名不写回', async () => {
+    const bridge = bridgeWith('Alt+T')
+    const window = load(bridge)
+    await waitUntil(() => field(window, HOTKEY).value === 'Alt+T')
+
+    dispatchKeydown(window, HOTKEY, { key: 'Dead', altKey: true })
+
+    const flagged = await waitUntil(
+      () => field(window, 'settings-status').getAttribute('data-kind') === 'error',
+    )
+    expect(flagged).toBe(true)
+    expect(bridge.set).not.toHaveBeenCalled()
+  })
 })
 
 /** 派发一次 keydown（jsdom 的 KeyboardEvent 类型经最小接口暴露）。 */

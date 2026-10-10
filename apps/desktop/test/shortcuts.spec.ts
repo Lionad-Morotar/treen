@@ -113,6 +113,40 @@ describe('ShortcutManager.unregisterAll', () => {
   })
 })
 
+describe('registrar 抛异常（Electron 对解析不了的 accelerator 是抛异常而非返回失败）', () => {
+  it('register 抛异常按失败处理：返回 false、不进 owned，退出时不再炸', () => {
+    const registrar: ShortcutRegistrar = {
+      register: () => {
+        throw new TypeError('Error processing argument at index 0, conversion failure from Alt+Shift+˛')
+      },
+      unregister: () => {
+        throw new TypeError('conversion failure from Alt+Shift+˛')
+      },
+      isRegistered: () => false,
+    }
+    const manager = new ShortcutManager(registrar)
+
+    expect(manager.register('Alt+Shift+˛', () => {})).toBe(false)
+    expect(manager.registeredAccelerators()).toEqual([])
+    expect(() => manager.unregisterAll()).not.toThrow()
+  })
+
+  it('unregister 抛异常就地吞掉：owned 照常清除，unregisterAll 不再抛', () => {
+    const registrar: ShortcutRegistrar = {
+      register: () => true,
+      unregister: () => {
+        throw new TypeError('conversion failure from CommandOrControl+Shift+X')
+      },
+      isRegistered: () => false,
+    }
+    const manager = new ShortcutManager(registrar)
+    manager.register('CommandOrControl+Shift+X', () => {})
+
+    expect(() => manager.unregisterAll()).not.toThrow()
+    expect(manager.registeredAccelerators()).toEqual([])
+  })
+})
+
 interface CaptureHarness {
   channel: ShortcutCaptureChannel
   setHotkeys: ReturnType<typeof vi.fn>

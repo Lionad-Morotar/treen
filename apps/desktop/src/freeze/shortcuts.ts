@@ -102,17 +102,26 @@ export class ShortcutManager {
    */
   register(accelerator: string, handler: () => void): boolean {
     this.unregister(accelerator)
-    this.owned.set(accelerator, handler)
     // 形态可接才走 capture：Escape、功能键、Option/Control 组合等助手无法按注册字符
     // 命中的键位必须留在 globalShortcut 上，否则进了 capture 表也收不到命中，快捷键失效。
     if (this.capture?.available() && parseAccelerator(accelerator) !== null) {
+      this.owned.set(accelerator, handler)
       this.captureOwned.add(accelerator)
       this.syncCapture()
       return true
     }
-    const ok = this.registrar.register(accelerator, handler)
-    if (!ok) {
-      this.owned.delete(accelerator)
+    let ok: boolean
+    try {
+      ok = this.registrar.register(accelerator, handler)
+    } catch (error) {
+      // Electron 对解析不了的 accelerator 是抛异常而非返回 false（设置页曾放行 macOS 死键字符
+      // 拼出的非法键位）。异常漏出去会在注册时炸一次、退出 dispose 再炸一次，就是主进程崩窗，
+      // 故按「注册失败」同型处理：不进 owned、返回 false，让调用方的回落逻辑接手。
+      this.logger?.warn(`热键 ${accelerator} 注册失败：${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+    if (ok) {
+      this.owned.set(accelerator, handler)
     }
     return ok
   }
@@ -125,7 +134,13 @@ export class ShortcutManager {
     if (this.captureOwned.delete(accelerator)) {
       this.syncCapture()
     } else {
-      this.registrar.unregister(accelerator)
+      try {
+        this.registrar.unregister(accelerator)
+      } catch (error) {
+        // 注销路径的异常必须就地吞掉：这里在退出钩子的调用链上，抛出去就是退出崩窗。
+        // owned 照常清除，否则此后每次退出都会在同一处再炸一次。
+        this.logger?.warn(`热键 ${accelerator} 注销失败：${error instanceof Error ? error.message : String(error)}`)
+      }
     }
     this.owned.delete(accelerator)
   }

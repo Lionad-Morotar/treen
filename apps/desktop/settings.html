@@ -292,6 +292,20 @@
           ArrowRight: 'Right',
           ' ': 'Space',
           '+': 'Plus',
+          Backspace: 'Backspace',
+          Delete: 'Delete',
+          Insert: 'Insert',
+          Enter: 'Return',
+          Tab: 'Tab',
+          Home: 'Home',
+          End: 'End',
+          PageUp: 'PageUp',
+          PageDown: 'PageDown',
+          PrintScreen: 'PrintScreen',
+          CapsLock: 'Capslock',
+          NumLock: 'Numlock',
+          ScrollLock: 'Scrolllock',
+          Escape: 'Escape',
         }
         // 不合法时告诉用户为什么；只说「不可用」会让人不知道该怎么改。
         var HOTKEY_HINTS = {
@@ -300,7 +314,6 @@
           unknown: '这个键不能用作热键，换一个',
         }
         var FUNCTION_KEY = /^F([1-9]|1[0-9]|2[0-4])$/
-        var WORD_KEY = /^[A-Za-z]+$/
 
         function byId(id) {
           return document.getElementById(id)
@@ -317,13 +330,17 @@
             return KEY_ALIASES[key]
           }
           if (key.length === 1) {
-            return key.toUpperCase()
+            // Electron 的键名只认 ASCII 字母数字（其余走别名/功能键表）。macOS 上 Option(+Shift)
+            // 组合的 event.key 是死键字符（如 ˛），直传会拼出 Electron 解析不了的 accelerator，
+            // 而 Electron 注册/注销它时抛异常而非返回失败，异常漏到退出钩子就是主进程崩窗。
+            return /^[A-Za-z0-9]$/.test(key) ? key.toUpperCase() : null
           }
           if (FUNCTION_KEY.test(key)) {
             return key
           }
-          // Home / End / PageUp 一类单词键名与 accelerator 同名，首字母大写即可。
-          return WORD_KEY.test(key) ? key.charAt(0).toUpperCase() + key.slice(1) : null
+          // 命名键全走别名表，不再放行任意字母词：DOM 的 Dead / Unidentified 同样是字母词，
+          // 放行会重演死键字符的崩窗。别名表里没有的键一律拒收。
+          return null
         }
 
         /**
