@@ -4,6 +4,7 @@ import {
   buildTranslateBody,
   chunk,
   createBatchTranslator,
+  isChineseDominant,
   parseTranslations,
   type TranslateCompleter,
 } from '../src/translation/deepseek'
@@ -63,6 +64,31 @@ describe('buildTranslateBody', () => {
     expect(user?.content).toContain('你好世界')
     expect(user?.content).toContain('second line')
   })
+
+  it('prompt 要求已是目标语言的条目原样返回，不改写不润色不纠错', () => {
+    const body = buildTranslateBody(['hello']) as { messages: { role: string; content: string }[] }
+    const system = body.messages.find((message) => message.role === 'system')
+
+    expect(system?.content).toContain('已是简体中文')
+    expect(system?.content).toContain('原样返回')
+    expect(system?.content).toContain('不得改写')
+  })
+})
+
+describe('isChineseDominant', () => {
+  it('纯中文与汉主英辅混排判为中文：英文术语保留是常态，无需翻译', () => {
+    expect(isChineseDominant('标题')).toBe(true)
+    expect(isChineseDominant('实测拍网格（beats overlay）：comb 最大似然')).toBe(true)
+    expect(isChineseDominant('用 React 写的 hook')).toBe(true)
+    expect(isChineseDominant('version 2.0 更新说明')).toBe(true)
+  })
+
+  it('纯英文判为非中文；数字与空文本无可译语义，视作免译', () => {
+    expect(isChineseDominant('The quick brown fox jumps over the lazy dog')).toBe(false)
+    expect(isChineseDominant('graph LR')).toBe(false)
+    expect(isChineseDominant('2024')).toBe(true)
+    expect(isChineseDominant('')).toBe(true)
+  })
 })
 
 describe('createBatchTranslator', () => {
@@ -97,15 +123,15 @@ describe('createBatchTranslator', () => {
       // 第一条请求（整批）返回长度不符
       .mockResolvedValueOnce('{"translations":["只有一条"]}')
       // 降级逐条：两条各请求一次
-      .mockResolvedValueOnce('{"translations":["乙译"]}')
-      .mockResolvedValueOnce('{"translations":["甲译"]}')
+      .mockResolvedValueOnce('{"translations":["beta 译"]}')
+      .mockResolvedValueOnce('{"translations":["alpha 译"]}')
     const logger = { info: vi.fn(), warn: vi.fn() }
     const translate = createBatchTranslator({ complete, logger })
 
-    const result = await translate(['甲', '乙'])
+    const result = await translate(['alpha', 'beta'])
 
     expect(complete).toHaveBeenCalledTimes(3)
-    expect(result).toEqual(['乙译', '甲译'])
+    expect(result).toEqual(['beta 译', 'alpha 译'])
     expect(logger.warn).toHaveBeenCalled()
   })
 
@@ -116,11 +142,58 @@ describe('createBatchTranslator', () => {
       .mockResolvedValueOnce('garbage') // 逐条第 1 条失败
     const translate = createBatchTranslator({ complete })
 
-    await expect(translate(['甲', '乙'])).rejects.toThrow()
+    await expect(translate(['alpha', 'beta'])).rejects.toThrow()
   })
 
   it('默认批大小是导出的常量', () => {
     expect(DEFAULT_BATCH_SIZE).toBeGreaterThan(0)
+  })
+})
+
+describe('createBatchTranslator · 语言门控', () => {
+  it('整批已是中文时一次外部调用都不发，返回等长且等于原文', async () => {
+    const complete = vi.fn<TranslateCompleter>()
+    const logger = { info: vi.fn(), warn: vi.fn() }
+    const translate = createBatchTranslator({ complete, logger })
+
+    const texts = ['实测拍网格（beats overlay）：comb 最大似然', '标题', '你好，世界']
+    expect(await translate(texts)).toEqual(texts)
+    expect(complete).not.toHaveBeenCalled()
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('3/3'))
+  })
+
+  it('混批时只送外文条目，中文条目原位回填，等长与顺序不乱', async () => {
+    const complete = vi.fn<TranslateCompleter>(async () => '{"translations":["brown fox 译文"]}')
+    const translate = createBatchTranslator({ complete })
+
+    const result = await translate(['标题', 'brown fox', '结束'])
+
+    expect(result).toEqual(['标题', 'brown fox 译文', '结束'])
+    expect(complete).toHaveBeenCalledTimes(1)
+    // 请求体里只有外文条目：中文条目不进请求，省下的不只是费用，还有被模型改写漂移的风险。
+    const body = complete.mock.calls[0]?.[0] as { messages: { role: string; content: string }[] }
+    const user = body.messages.find((message) => message.role === 'user')
+    expect(user?.content).toContain('brown fox')
+    expect(user?.content).not.toContain('标题')
+  })
+
+  it('门控跳过的条目不是丢弃：唯一外文条目降级逐条仍失败时抛错，中文条目从未进请求', async () => {
+    const complete = vi.fn<TranslateCompleter>()
+    complete
+      .mockResolvedValueOnce('garbage') // 单条批解析失败
+      .mockResolvedValueOnce('garbage') // 逐条降级仍失败
+    const logger = { info: vi.fn(), warn: vi.fn() }
+    const translate = createBatchTranslator({ complete, logger })
+
+    await expect(translate(['标题', 'plain english line'])).rejects.toThrow()
+    // 两次请求体里都只有英文条目：中文条目连降级路径都没进。
+    for (const call of complete.mock.calls) {
+      const body = call[0] as { messages: { role: string; content: string }[] }
+      const user = body.messages.find((message) => message.role === 'user')
+      expect(user?.content).toContain('plain english line')
+      expect(user?.content).not.toContain('标题')
+    }
+    expect(logger.warn).toHaveBeenCalled()
   })
 })
 
