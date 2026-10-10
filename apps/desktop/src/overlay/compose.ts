@@ -151,10 +151,12 @@ async function composeCharts(
     const attempts: Array<{ source: string; lineCount: number }> = []
     for (const attempt of candidateSources) {
       if (lookup !== null) {
-        attempts.push({
-          source: mapNodeLabels(attempt.source, (label) => lookup.get(label) ?? null).output,
-          lineCount: attempt.lineCount,
-        })
+        const mapped = mapNodeLabels(attempt.source, (label) => lookup.get(label) ?? null).output
+        // 译文版与原文版逐字节相同时不重复送渲染：中文标签经语言门控原文回填后，两条尝试本是
+        // 同一份源码，渲染站拒第一条时第二条注定同样失败，白付一次往返还把失败日志搅混。
+        if (mapped !== attempt.source) {
+          attempts.push({ source: mapped, lineCount: attempt.lineCount })
+        }
       }
       attempts.push(attempt)
     }

@@ -333,4 +333,16 @@ describe('composeOverlayPlan · 图内节点文案翻译', () => {
     expect(sources[0]).toBe('graph LR\nA[流程甲] --> B[流程乙]')
     expect(plan.charts).toHaveLength(1)
   })
+
+  it('节点标签译文全为同文时，译文版与原文版是同一份源码，渲染站每个候选只收一次请求', async () => {
+    // 中文标签经语言门控原文回填后，译文版源码与原文版逐字节相同；不去重的话渲染站拒第一条时
+    // 第二条注定同样失败，白付一次往返。
+    const { render, sources } = renderStub()
+    const { translateLabels } = labelTranslator({})
+
+    const plan = await composeOverlayPlan(labeledScene(), REGION, { render, translateLabels })
+
+    expect(sources).toEqual(['graph LR\nA[流程甲] --> B[流程乙]'])
+    expect(plan.charts).toHaveLength(1)
+  })
 })

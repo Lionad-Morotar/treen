@@ -83,11 +83,21 @@ describe('isChineseDominant', () => {
     expect(isChineseDominant('version 2.0 更新说明')).toBe(true)
   })
 
-  it('纯英文判为非中文；数字与空文本无可译语义，视作免译', () => {
+  it('外文字母（西里尔、谚文等）计入分母，对应语种照常送译而非整批免译', () => {
     expect(isChineseDominant('The quick brown fox jumps over the lazy dog')).toBe(false)
     expect(isChineseDominant('graph LR')).toBe(false)
-    expect(isChineseDominant('2024')).toBe(true)
-    expect(isChineseDominant('')).toBe(true)
+    expect(isChineseDominant('Настройки безопасности')).toBe(false)
+    expect(isChineseDominant('설정 보기')).toBe(false)
+  })
+
+  it('含假名的行不可能是简体中文：含汉字的日语与纯假名行都送译', () => {
+    expect(isChineseDominant('設定を確認してください')).toBe(false)
+    expect(isChineseDominant('ごはんをたべます')).toBe(false)
+  })
+
+  it('纯数字、标点与空文本按非中文送译：误送的代价仅一次原样返回，误关则语种静默失效', () => {
+    expect(isChineseDominant('2024')).toBe(false)
+    expect(isChineseDominant('')).toBe(false)
   })
 })
 
@@ -175,6 +185,15 @@ describe('createBatchTranslator · 语言门控', () => {
     const user = body.messages.find((message) => message.role === 'user')
     expect(user?.content).toContain('brown fox')
     expect(user?.content).not.toContain('标题')
+  })
+
+  it('整批非拉丁外文（西里尔/谚文）不触发门控，照常送译', async () => {
+    const complete = vi.fn<TranslateCompleter>(async () => '{"translations":["安全设置译","查看设置译"]}')
+    const translate = createBatchTranslator({ complete })
+
+    const texts = ['Настройки безопасности', '설정 보기']
+    expect(await translate(texts)).toEqual(['安全设置译', '查看设置译'])
+    expect(complete).toHaveBeenCalledTimes(1)
   })
 
   it('门控跳过的条目不是丢弃：唯一外文条目降级逐条仍失败时抛错，中文条目从未进请求', async () => {

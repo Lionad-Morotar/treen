@@ -106,29 +106,39 @@ export function parseTranslations(content: string, expected: number): string[] |
 }
 
 /**
- * 简体中文目标的免译阈值：汉字数占「文字本体」（汉字与拉丁字母，空白、标点、数字均不计）比例的下限。
+ * 简体中文目标的免译阈值：汉字数占全部字母（Unicode 字母类别）的比例下限。
  *
- * 阈值刻意向「判中文」倾斜，因为两侧代价不对称：误把英文段落判成中文，代价只是少省一次调用
- * （prompt 兜底要求模型原样返回已是目标语言的条目）；误把中文为主的混排行判成外文，代价是模型
- * 改写本来就正确的中文——术语漂移、OCR 错字被译文固化，再原位糊回屏幕。0.25 能覆盖中文屏上的
- * 「汉主英辅混排」：像「实测拍网格（beats overlay）：comb 最大似然」（约 0.4）或「用 React 写的
- * hook」（恰好 0.25）这类行，英文术语保留是常态，同样无需翻译；再压低阈值只会把「version 2.0
- * 更新说明」这类真正的中文行也送进付费调用。
+ * 阈值刻意向「判中文」倾斜，因为两侧代价不对称：误把外文判成中文，该条目被原文回填后永远不被
+ * 翻译、也不上屏——prompt 兜底救不了没进请求的条目；误把中文判成外文，代价只是一次付费调用
+ * （prompt 兜底要求模型对已是目标语言的条目原样返回）。0.25 能覆盖中文屏上的「汉主英辅混排」：
+ * 像「实测拍网格（beats overlay）：comb 最大似然」（约 0.4）或「用 React 写的 hook」（恰好 0.25）
+ * 这类行，英文术语保留是常态，同样无需翻译；再压低阈值只会把「version 2.0 更新说明」这类真正的
+ * 中文行也送进付费调用，且每压一档都在扩大「外文被误关」的静默面。
  */
 export const CHINESE_DOMINANT_RATIO = 0.25
 
 /**
- * 判断一条文本是否已是简体中文（按汉字主导判据）。空白、标点、数字不参与占比——它们不含可译语义，
- * 计入分母只会让「第 3 行」「version 2.0 更新说明」这类中文行被数字稀释成假外文。
- * 空文本与纯数字/标点无可译内容，视作已达标。
+ * 判断一条文本是否已是简体中文（按汉字主导判据）。
+ *
+ * 含假名的行不可能是简体中文——汉字占比区分不了「中文」与「含汉字的日语」，假名检测补上这个盲区。
+ * 分母是全部字母（Unicode 字母类别）而非只数拉丁字母：西里尔、谚文、阿拉伯文等字母文字计入分母后
+ * 汉字占比自然掉下去，照常送译；若把它们排除在分母外，一张俄语屏会被当成「无可译内容」整批免译，
+ * 翻译功能对那个语种静默失效。没有任何字母（纯数字、标点、空文本）同样按非中文送译：这类条目
+ * 误送译的代价只是模型原样返回的一次调用，误判免译的代价是整个语种静默失效，宁可多送。
+ *
+ * 繁体中文按此判据同样免译（占比区分不了简繁）：廉价判据做不到可靠简繁区分（共用字占多数），
+ * 引入转换库超出本切片边界，繁→简转换归后续切片。
  */
 export function isChineseDominant(text: string): boolean {
-  const script = text.match(/[\p{Script=Han}A-Za-z]/gu)?.length ?? 0
-  if (script === 0) {
-    return true
+  if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) {
+    return false
+  }
+  const letters = text.match(/\p{L}/gu)?.length ?? 0
+  if (letters === 0) {
+    return false
   }
   const han = text.match(/\p{Script=Han}/gu)?.length ?? 0
-  return han / script >= CHINESE_DOMINANT_RATIO
+  return han / letters >= CHINESE_DOMINANT_RATIO
 }
 
 export interface BatchTranslatorDeps {
