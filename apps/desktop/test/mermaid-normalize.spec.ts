@@ -166,9 +166,21 @@ describe('normalizeMermaid · <br/> 劣化形态归一（S14）', () => {
   it('缺尾的 <br 补全为 <br/>，非 br 的 < 开头序列不动', () => {
     expect(normalizeMermaid('A[beats<br]')).toBe('A[beats<br/>]')
     expect(normalizeMermaid('A[beats<br times]')).toBe('A[beats<br/> times]')
+    // <br> 与 <br > 是 mermaid 最常见的多行标签写法，归一后不得多出字面 >。
+    expect(normalizeMermaid('A[foo<br>bar]')).toBe('A[foo<br/>bar]')
+    expect(normalizeMermaid('A[beats<br >times]')).toBe('A[beats<br/>times]')
     // <br 后跟字母区分不了 <break 与粘连劣化，保守保留原样。
     expect(normalizeMermaid('A[较小 <box> 形态]')).toBe('A[较小 <box> 形态]')
     expect(normalizeMermaid('A[<break 点>]')).toBe('A[<break 点>]')
+  })
+
+  it('sequenceDiagram 声明在场时全角箭头劣化形保留 ->> 语义', () => {
+    // 声明行给出图类型上下文：sequence 的 -->> 合法，-》> 劣化形不应被压成实线 -->。
+    expect(normalizeMermaid('sequenceDiagram\nAlice -》> Bob: hi')).toBe('sequenceDiagram\nAlice -->> Bob: hi')
+    expect(normalizeMermaid('sequenceDiagram\nAlice -→> Bob: hi')).toBe('sequenceDiagram\nAlice -->> Bob: hi')
+    // flowchart 声明在场（或声明丢失）时照旧收窄：-->> 会被 parse 拒。
+    expect(normalizeMermaid('graph LR\nA -→> B')).toBe('graph LR\nA --> B')
+    expect(normalizeMermaid('A -→> B')).toBe('A --> B')
   })
 
   it('真机缺陷样本归一后首行可解析、垃圾行劣化被修', () => {

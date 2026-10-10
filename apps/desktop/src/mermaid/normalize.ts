@@ -77,6 +77,22 @@ function canonicalizeDeclarationLine(line: string): string | null {
 }
 
 /**
+ * 源码是否声明为 sequenceDiagram：声明行给出图类型上下文，sequence 的 `-->>` 是合法异步
+ * 消息，全角箭头劣化形（`-》>`）不该被压成实线。声明丢失时（S14 的主缺陷场景）按默认图
+ * flowchart 处置——`-->>` 会被 parse 拒，收窄让图能出；此时 sequence 的劣化异步消息会
+ * 降级为实线箭头，图仍出，比整块消失好。
+ */
+function declaresSequenceDiagram(source: string): boolean {
+  for (const line of source.split(/\r?\n/)) {
+    if (line.trim() === '') {
+      continue
+    }
+    return /^sequenceDiagram\b/i.test(line.trim())
+  }
+  return false
+}
+
+/**
  * 归一化一段（候选）mermaid 源码。返回仍保留行结构的新字符串。
  */
 export function normalizeMermaid(source: string): string {
@@ -86,6 +102,8 @@ export function normalizeMermaid(source: string): string {
   let atLineStart = true
   // >0 表示正处于 `%%{ ... }%%` 指令内部（花括号可嵌套、可跨行）。
   let initDepth = 0
+  // sequence 上下文不吃全角箭头后的裸 >（见 declaresSequenceDiagram）。
+  const keepTrailingClose = declaresSequenceDiagram(source)
 
   while (index < length) {
     const ch = source[index] ?? ''
@@ -188,9 +206,12 @@ export function normalizeMermaid(source: string): string {
         index = head + 1
         // OCR 对破折号笔画的误识常连带产出多余的裸 `>`（`-→>` 是 -、→、> 三段），flowchart
         // 拒收 `-->>`（mermaid.parse 实测），故全角箭头归一后把紧邻的裸 > 一并吃掉。纯 ASCII
-        // 的 ->> / -->> 走上方分支不经这里，sequenceDiagram 语义完好。
-        while (source[index] === '>') {
-          index += 1
+        // 的 ->> / -->> 走上方分支不经这里；sequence 声明在场时也不吃——`-》>` 的真源多半
+        // 是合法的异步消息 `-->>`。
+        if (!keepTrailingClose) {
+          while (source[index] === '>') {
+            index += 1
+          }
         }
         continue
       }
@@ -205,8 +226,10 @@ export function normalizeMermaid(source: string): string {
       out += '-->'
       index += 1
       // 与 dash 后全角箭头的分支同理：紧邻的裸 > 是同一轮误识的连带产物，一并吃掉。
-      while (source[index] === '>') {
-        index += 1
+      if (!keepTrailingClose) {
+        while (source[index] === '>') {
+          index += 1
+        }
       }
       continue
     }
@@ -237,8 +260,26 @@ export function normalizeMermaid(source: string): string {
         continue
       }
       if (source.startsWith('<br', index)) {
-        const next = source[index + 3] ?? ''
-        if (next === '' || next === ' ' || next === '>' || next === ']' || next === ')' || next === '}') {
+        const immediate = source[index + 3] ?? ''
+        if (immediate === ']' || immediate === ')' || immediate === '}' || immediate === '') {
+          // 尾巴被 OCR 整体吃掉，补全即可（闭括号/行尾不是尾巴的一部分）。
+          out += '<br/>'
+          index += 3
+          continue
+        }
+        // <br> 与 <br > 是 mermaid 最常见的多行标签写法，尾巴消费到 > 为止，
+        // 归一后不得在标签里多出字面 >。
+        let cursor = index + 3
+        while (source[cursor] === ' ') {
+          cursor += 1
+        }
+        if (source[cursor] === '>') {
+          out += '<br/>'
+          index = cursor + 1
+          continue
+        }
+        if (immediate === ' ') {
+          // <br 与后续文本之间只隔一个空格：按缺尾劣化补全，空格留给原文。
           out += '<br/>'
           index += 3
           continue

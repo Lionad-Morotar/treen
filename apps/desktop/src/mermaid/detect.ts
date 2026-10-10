@@ -146,9 +146,10 @@ export function looksLikeStatementLine(line: string): boolean {
  *    hasStructuralLine（箭头或关系算子）而非仅箭头：无声明的 classDiagram 劣化段靠关系算子
  *    表达结构，只数箭头会让「有声明可检出、无声明检不出」不对称。
  *
- * 两条判据都不命中时，段内每行仍会作为新段首被重试（段首可能是混入的正文的图，也可能纯是
- * 正文）；命中时候选块吞整段——紧邻的正文行交由下游 parse 与装配层的语句行过滤裁决，
- * 不在检测层做猜测式裁剪。
+ * 两条判据都不命中时，扫描从下一行继续（段内剩余部分可能以新段首命中）；命中时候选块的
+ * source 吞整段——紧邻的正文行交由下游 parse 与装配层的语句行过滤裁决，不在检测层做
+ * 猜测式裁剪。已知限制：同段内两张都丢了声明行的紧邻图没有任何文本层分隔信号，只会产出
+ * 一个候选（有声明行的场景由装配层的 stopAt 拆分）。
  */
 export function detectMermaidBlocks(text: string): MermaidCandidate[] {
   const lines = text.split(/\r?\n/)
@@ -188,7 +189,10 @@ export function detectMermaidBlocks(text: string): MermaidCandidate[] {
     const statementCount = segment.filter(looksLikeStatementLine).length
     const structuralCount = segment.filter(hasStructuralLine).length
     if (statementCount >= 2 && structuralCount >= 2) {
-      blocks.push({ startLine: index, endLine: end, source: segment.join('\n') })
+      // 几何锚点取段内首个语句行：整片选区常因观察间无空行而连成一段，段首可能是图上方的
+      // 正文行——从它扩张会把矩形钉在正文上，图反而求不到区域。source 仍取整段交渲染裁决。
+      const firstStatement = segment.findIndex(looksLikeStatementLine)
+      blocks.push({ startLine: index + firstStatement, endLine: end, source: segment.join('\n') })
       index = end + 1
       continue
     }

@@ -187,8 +187,17 @@ describe('detectMermaidBlocks 无声明行判据（S14）', () => {
 
     expect(blocks.length).toBeGreaterThanOrEqual(1)
     expect(blocks[0]?.source).toContain('WAV --> B1')
-    // 候选块从段首行起（无声明行可依）。
+    // 几何锚点取段内首个语句行（段首的正文行不是图的最上行），样本段首即语句行。
     expect(blocks[0]?.startLine).toBe(0)
+  })
+
+  it('段首混入正文行时候选锚点取首个语句行', () => {
+    const text = ['这是图上方的正文。', '正文占了两行。', 'WAV --> B1', 'WAV --> B2'].join('\n')
+    const blocks = detectMermaidBlocks(text)
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]?.startLine).toBe(2)
+    expect(blocks[0]?.source).toContain('这是图上方的正文。')
   })
 
   it('段内至少两行像语句才检出：单行语句不成候选', () => {

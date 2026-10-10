@@ -53,20 +53,26 @@ export interface ComposeOverlayDeps {
 }
 
 /**
- * 一个候选块值得送渲染站的源码，按尝试次序排列（最像图 → 最保守）；`memberIndices` 是它覆盖的
+ * 一个候选块值得送渲染站的源码，按尝试次序排列（最保守 → 最像图）；`memberIndices` 是它覆盖的
  * 成员下标（几何区域成员数组内的下标，供重算版位）——语句行过滤丢的是中间的垃圾行，候选不再
  * 恒为区域的「前缀切片」，行数不足以表达覆盖范围。
  *
  * 候选序列（S14 起）：
- * 1. 只保留像语句的行——真机实测里图的行间会混进箭头变形又粘连正文的垃圾行，整段注定渲染失败
- *    而图本身是好的，先把垃圾行丢掉再试；
- * 2. 上一条的尾部裁剪版——末行若是「像语句但非结构行」的残句，砍掉再试；
- * 3. 区域内全部行（历史首选）；
- * 4. 全区域的尾部裁剪版——图后紧邻正文时（空行常被 OCR 丢掉），砍掉最后一条连线行之后的行。
+ * 1. 区域内全部行（历史首选）；
+ * 2. 全区域的尾部裁剪版——图后紧邻正文时（空行常被 OCR 丢掉），砍掉最后一条连线行之后的行；
+ * 3. 只保留像语句的行——真机实测里图的行间会混进箭头变形又粘连正文的垃圾行，整段注定渲染失败
+ *    而图本身是好的，丢掉垃圾行再试；
+ * 4. 上一条的尾部裁剪版。
+ *
+ * **保守在前是刻意反转**（锚点原写「最像图 → 最保守」，审查实证后推翻）：subgraph、participant、
+ * Note、classDef 这类合法的非语句行会被过滤候选丢掉，而裁掉后源码依然合法——渲染站裁决不出
+ * 内容缺失，过滤候选若排前且命中，一张缺内容的错图就静默落地，被丢行的译文又被图版位抑制，
+ * 内容双向丢失。故过滤候选只作 fallback：全区域先试（渲染站拒掉含垃圾行的源码），拒了才轮到
+ * 裁剪。它还须至少含一条结构行才产出——全过滤只剩裸声明时会渲染出空图盖住声明行。
  *
  * 只砍尾部的非连线行、过滤只丢不像语句的行：按检测层自己的判据，连线行才是图的结构，动它们才
  * 可能得到与屏幕不符的图。这是**由渲染站裁决**的裁剪，不是对行义的猜测。相同覆盖范围的候选
- * 只保留一条（两种过滤在特定输入下会撞出同一行集，重复送渲染白付一次往返）。
+ * 只保留一条（两种裁剪在特定输入下会撞出同一行集，重复送渲染白付一次往返）。
  *
  * 候选块没有声明行时补默认声明 `graph LR`：方向缩写只有在 OCR 明确认出（声明行在场）时才采信，
  * 认不出就用默认——猜方向没有依据。
@@ -86,11 +92,24 @@ export function chartSourceCandidates(lines: readonly string[]): Array<{ source:
     candidates.push({ source, memberIndices: [...memberIndices] })
   }
 
+  push(allIndices)
+  const lastStructural = allIndices.reduce(
+    (last, index) => (hasStructuralLine(lines[index] ?? '') ? index : last),
+    -1,
+  )
+  if (lastStructural >= 0 && lastStructural < allIndices.length - 1) {
+    push(allIndices.slice(0, lastStructural + 1))
+  }
+
   // 过滤集合恒含声明行：声明行不是语句行，但它是图的组成，滤掉它会让候选失去声明。
   const statementIndices = allIndices.filter(
     (index) => looksLikeStatementLine(lines[index] ?? '') || isDiagramDeclaration(lines[index] ?? ''),
   )
-  if (statementIndices.length > 0 && statementIndices.length < allIndices.length) {
+  if (
+    statementIndices.length > 0 &&
+    statementIndices.length < allIndices.length &&
+    statementIndices.some((index) => hasStructuralLine(lines[index] ?? ''))
+  ) {
     push(statementIndices)
     const lastStructuralInStatement = statementIndices.reduce(
       (last, index, position) => (hasStructuralLine(lines[index] ?? '') ? position : last),
@@ -99,15 +118,6 @@ export function chartSourceCandidates(lines: readonly string[]): Array<{ source:
     if (lastStructuralInStatement >= 0 && lastStructuralInStatement < statementIndices.length - 1) {
       push(statementIndices.slice(0, lastStructuralInStatement + 1))
     }
-  }
-
-  push(allIndices)
-  const lastStructural = allIndices.reduce(
-    (last, index) => (hasStructuralLine(lines[index] ?? '') ? index : last),
-    -1,
-  )
-  if (lastStructural >= 0 && lastStructural < allIndices.length - 1) {
-    push(allIndices.slice(0, lastStructural + 1))
   }
 
   return candidates
