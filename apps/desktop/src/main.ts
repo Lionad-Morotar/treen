@@ -33,13 +33,14 @@ import {
   macOcrEngine,
 } from './translation'
 import { composeOverlayPlan, createLatestGate, createRegionLockAction } from './overlay'
-import { createRenderSiteClient } from './render-site'
+import { createRenderSiteClient, ensureRenderSite, type ResidentSiteHandle } from './render-site'
 import { createSettingsStore, registerSettingsIpc, type SettingsStore } from './settings'
 import { describeStartup } from './startup'
 
 const logger = createLogger('desktop')
 
 let freeze: FreezeController | null = null
+let residentRenderSite: ResidentSiteHandle | null = null
 let hotkeyCapture: HotkeyCaptureChannel | null = null
 let hotkeyCaptureAuthorized = false
 let hotkeyCaptureReady = false
@@ -271,6 +272,11 @@ app.whenReady().then(() => {
   // 设置先于窗口与冻结就绪：设置页一打开就要经 IPC 读到它，冻结域也要从它取热键与开关。
   const settings = setupSettings()
   createMainWindow()
+  // 渲染站与冻结域并行就绪：图表只在点击翻译时才需要站点，拉起不阻塞冻结可用。
+  // 失败（缺产物/超时）只告警，文本翻译与冻结不受影响。
+  void ensureRenderSite({ appPath: app.getAppPath(), logger }).then((handle) => {
+    residentRenderSite = handle
+  })
   registerHotkeyCaptureIpc({
     ipc: ipcMain,
     status: hotkeyCaptureStatus,
@@ -298,6 +304,7 @@ app.on('will-quit', () => {
   // capture 助手同样要收（unregisterAll 内会 dispose，这里兜 controller 未建或已先拆的路径）。
   freeze?.dispose()
   hotkeyCapture?.dispose()
+  residentRenderSite?.stop()
 })
 
 app.on('window-all-closed', () => {
