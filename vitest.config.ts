@@ -10,6 +10,11 @@ const renderSite = fileURLToPath(new URL('./apps/render-site/', import.meta.url)
 
 export default defineConfig({
   plugins: [vue()],
+  // `import.meta.dev` 是 Nuxt 在构建期注入的字面量，单测直接装 .vue 时并不存在；按 dev 取值，
+  // 好让组件测试走的是调试内容那一支。
+  define: {
+    'import.meta.dev': 'true',
+  },
   resolve: {
     alias: {
       '~': `${renderSite}app`,

@@ -25,6 +25,7 @@ import {
   type TranslationPair,
 } from '~/utils/dev-pipeline-format'
 import { chartSourcesOf } from '~/utils/dev-pipeline-overlay'
+import { devPageEnabled } from '~/utils/dev-pages'
 import type { RenderSiteHealth } from '~/utils/health'
 
 /**
@@ -44,6 +45,9 @@ import type { RenderSiteHealth } from '~/utils/health'
  * 页面与渲染产物共用同一份配色真源，页面里因此不再出现任何字面色值。
  */
 const themeVars = themeCssVariables(MERMAID_THEME_VARIABLES)
+
+/** 运行期兜底：构建期摘路由若因环境判定失准而漏摘，页面在这里自行空掉。 */
+const devEnabled = devPageEnabled(import.meta.dev)
 
 const health = ref<RenderSiteHealth | null>(null)
 const healthNote = ref('')
@@ -330,6 +334,10 @@ function onPaste(event: ClipboardEvent) {
 }
 
 onMounted(() => {
+  // 空态下不该再去探 dev 端点：页面都不可用，探测只会换来一堆门禁 404。
+  if (!devEnabled) {
+    return
+  }
   void loadHealth()
   void loadSamples()
   window.addEventListener('paste', onPaste)
@@ -347,8 +355,14 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <!-- 运行期兜底：debug 内容只在 dev 环境露出，构建期摘路由漏判时这一道兜住 -->
+  <p v-if="!devEnabled" class="page-off" data-testid="dev-pipeline-page-disabled">
+    调试台只在 dev 环境渲染。
+  </p>
+
   <!-- 调试台根节点：主题变量在这里注入一次，拖拽与粘贴的监听也挂在页面级 -->
   <main
+    v-else
     class="page"
     :class="{ dragging }"
     :style="themeVars"
@@ -531,6 +545,14 @@ onUnmounted(() => {
   margin: 0;
   color: var(--treen-tertiary-text-color);
   font-size: 0.75rem;
+}
+
+.page-off {
+  margin: 0;
+  padding: 1.25rem;
+  color: var(--treen-tertiary-text-color);
+  font-family: var(--treen-font-family);
+  font-size: 0.85rem;
 }
 
 .run {

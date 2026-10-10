@@ -1,10 +1,25 @@
 import { fileURLToPath } from 'node:url'
+import { tryUseNuxt } from 'nuxt/kit'
 import { RENDER_SITE_DEV_ROUTES, RENDER_SITE_HOST, RENDER_SITE_PORT, RENDER_SITE_ROUTES } from '@treen/ipc'
 import { withoutDevPages } from './app/utils/dev-pages'
 
 // 处理器绝对路径：Nitro 会用别名替换后按 srcDir 解析 handler 路径，传绝对路径可绕开
 // srcDir/别名随版本漂移的歧义（见 nitropack 的 resolveNitroPath）。
 const handlerDir = fileURLToPath(new URL('./server/handlers/', import.meta.url))
+
+/**
+ * 摘路由的 dev 判定：优先取 Nuxt 实例自己的 `options.dev`。
+ *
+ * `nuxi build` 只在 NODE_ENV 未设置时才置 production，开发者 shell 或 CI 显式导出
+ * NODE_ENV=development / staging 再跑 build，纯环境判定就会失真、把调试页连同它对 dev 端点的
+ * 调用一起放进生产产物；而 `nuxt.options.dev` 由 CLI 按命令定死，与环境无关。
+ * `pages:extend` 的回调不接 nuxt 实例，但 Nuxt 的 callHook 包在 runWithNuxtContext 里，
+ * 故这里能用 tryUseNuxt 取到；取不到（配置被别处直接 loadNuxtConfig 求值）退回 NODE_ENV。
+ * 构建期判定无论怎么取都可能失真，故页面侧还有 import.meta.dev 的运行时第二道防线。
+ */
+function isDevBuild(): boolean {
+  return tryUseNuxt()?.options.dev ?? process.env.NODE_ENV !== 'production'
+}
 
 export default defineNuxtConfig({
   compatibilityDate: '2026-10-01',
@@ -26,7 +41,7 @@ export default defineNuxtConfig({
      * 只剩「实跑一次生产构建」这一条验证路径。
      */
     'pages:extend'(pages) {
-      const kept = withoutDevPages(pages, process.env.NODE_ENV !== 'production')
+      const kept = withoutDevPages(pages, isDevBuild())
       pages.splice(0, pages.length, ...kept)
     },
   },

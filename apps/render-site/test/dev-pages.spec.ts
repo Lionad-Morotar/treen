@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDevPagePath, withoutDevPages } from '../app/utils/dev-pages'
+import { devPageEnabled, isDevPagePath, withoutDevPages } from '../app/utils/dev-pages'
 
 /**
  * dev 页面摘除判定的单测。
@@ -59,5 +59,22 @@ describe('dev 页面的摘除', () => {
     const pages = [{ path: '/' }]
     expect(withoutDevPages(pages, false)).toEqual(pages)
     expect(withoutDevPages(pages, true)).toEqual(pages)
+  })
+})
+
+/**
+ * 运行期这道防线的判据。
+ *
+ * 摘路由是构建期的事，判定依赖一次环境取值，失准时页面代码照样进产物；页面侧这一道是最后
+ * 兜底，故它自己的判据必须单独立得住，而不是和摘除判定共用一句表达式。
+ */
+describe('dev 页面的运行期兜底', () => {
+  it('只有 dev 为真才露出调试内容', () => {
+    expect(devPageEnabled(true)).toBe(true)
+    expect(devPageEnabled(false)).toBe(false)
+  })
+
+  it('打包器没替换 import.meta.dev 时按不可用处理，不猜默认值', () => {
+    expect(devPageEnabled(undefined)).toBe(false)
   })
 })

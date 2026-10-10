@@ -39,3 +39,15 @@ export function withoutDevPages<T extends DevPageLike>(pages: readonly T[], isDe
       page.children === undefined ? page : { ...page, children: withoutDevPages(page.children, false) },
     )
 }
+
+/**
+ * 运行期这道防线的判据：只有 dev 才把调试内容渲染出来。
+ *
+ * 构建期摘路由是第一道，但它依赖一次环境判定；判定失准时（比如 CI 显式导出 NODE_ENV 再跑 build）
+ * 页面代码照样进产物，此时这一道还兜得住——页面自己空掉，本机 OCR 结果与译文就不会被摊开。
+ * 参数收 `boolean | undefined` 而非 `boolean`：`import.meta.dev` 由打包器替换成字面量，未替换的
+ * 场景（纯 vitest 直接装 .vue）取到 undefined，按不可用处理而不是猜一个默认值。
+ */
+export function devPageEnabled(dev: boolean | undefined): boolean {
+  return dev === true
+}
