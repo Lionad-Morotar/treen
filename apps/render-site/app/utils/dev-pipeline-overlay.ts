@@ -6,6 +6,8 @@
  * 源码取错行则两侧比的不是同一张图。两件事都不抛错，故单独立在页面之外被验证。
  */
 
+import type { ChartPlacement } from '@treen/shared/overlay'
+
 /** 覆盖计划里的矩形：图像像素、左上原点。 */
 export interface OverlayBox {
   x: number
@@ -24,10 +26,14 @@ export interface OverlayTextItem extends OverlayBox {
   clipped: boolean
 }
 
-export interface OverlayChartItem extends OverlayBox {
-  svg: string
-  intrinsic: { width: number; height: number }
-}
+/**
+ * 覆盖计划里的一张图：绑定服务端的 `ChartPlacement`。
+ *
+ * 服务端只交回版位，不交固有尺寸（SVG 按 viewBox 缩放），故这里也不补一个 `intrinsic` 字段——
+ * 补了就是前端自造形状，真实响应下它恒为 undefined。要显示固有尺寸从 SVG 里读，见
+ * `svgIntrinsicOf`。
+ */
+export type OverlayChartItem = ChartPlacement
 
 /** 覆盖层预览的三种视图：只看原图、只看覆盖层、两者叠加。 */
 export type OverlayView = 'source' | 'overlay' | 'both'
@@ -121,11 +127,69 @@ export function chartSourceOf(
     .join('\n')
 }
 
-/** 逐张图还原源码，结果与服务端的 `plan.charts` 同序，便于按索引并列对比。 */
+/** 浏览器侧重渲一份图所用的源码。 */
+export interface ChartSource {
+  source: string
+  /**
+   * 这份源码是不是服务端实际渲染成功的那一份。
+   *
+   * 为 false 表示服务端没把源码带出来，这里只能按 OCR 块还原；还原值可能与服务端候选不同
+   * （候选按尝试次序取中，且相邻图声明行已被 `stopAt` 排除），两侧对比的结论因此不成立。
+   */
+  exact: boolean
+}
+
+/** 逐张图取源码，结果与服务端的 `plan.charts` 同序，便于按索引并列对比。 */
 export function chartSourcesOf(
   blocks: ReadonlyArray<{ text: string; box: OverlayBox }>,
   charts: readonly OverlayChartItem[],
-): string[] {
+): ChartSource[] {
   // 版位自身就是扁平的矩形（与覆盖计划的 TextPlacement/ChartPlacement 同形），直接当矩形用。
-  return charts.map((chart) => chartSourceOf(blocks, chart))
+  return charts.map((chart) => {
+    const source = chart.source
+    if (typeof source === 'string' && source !== '') {
+      return { source, exact: true }
+    }
+    return { source: chartSourceOf(blocks, chart), exact: false }
+  })
+}
+
+/** SVG 的固有尺寸。 */
+export interface SvgSize {
+  width: number
+  height: number
+}
+
+/** viewBox 的四个数是「minX minY width height」，分隔符可以是空格或逗号。 */
+const VIEW_BOX =
+  /viewBox\s*=\s*["']\s*(-?[\d.]+)[\s,]+(-?[\d.]+)[\s,]+(-?[\d.]+)[\s,]+(-?[\d.]+)\s*["']/
+
+function attributePx(svg: string, name: string): number | null {
+  const matched = new RegExp(`${name}\\s*=\\s*["']\\s*(-?[\\d.]+)`).exec(svg)
+  const value = matched === null ? Number.NaN : Number.parseFloat(matched[1] ?? '')
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+/**
+ * 从 SVG 文本里读内容固有尺寸：优先 viewBox，其次根元素的 width/height 属性。
+ *
+ * 服务端只交回版位，固有尺寸无处可取，而「这张图有没有被缩放」要看它；故自己从 SVG 里读，
+ * 读不出返回 null 而不是拿版位顶上——版位是 contain 适配后的结果，两者混淆会让缩放看不出来。
+ * 走正则而非 DOM 解析：这段代码也在纯 Node 下被单测跑，且输入是渲染站消毒过的 SVG 串。
+ */
+export function svgIntrinsicOf(svg: string): SvgSize | null {
+  const box = VIEW_BOX.exec(svg)
+  if (box !== null) {
+    const width = Number.parseFloat(box[3] ?? '')
+    const height = Number.parseFloat(box[4] ?? '')
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      return { width, height }
+    }
+  }
+  const width = attributePx(svg, 'width')
+  const height = attributePx(svg, 'height')
+  if (width !== null && height !== null) {
+    return { width, height }
+  }
+  return null
 }

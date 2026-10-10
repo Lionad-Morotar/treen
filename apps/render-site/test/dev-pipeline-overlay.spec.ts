@@ -5,6 +5,7 @@ import {
   overlayScaleOf,
   overlayStyleOf,
   overlayTextStyleOf,
+  svgIntrinsicOf,
   type OverlayChartItem,
   type OverlayTextItem,
 } from '../app/utils/dev-pipeline-overlay'
@@ -83,10 +84,9 @@ describe('图表源码的还原', () => {
     { text: '正文一段', box: { x: 0, y: 300, width: 200, height: 20 } },
   ]
 
-  // 版位与覆盖计划同形：x/y/width/height 就在顶层，不再套一层 box。
+  // 版位与服务端 RealShape 同形：只有 x/y/width/height/svg，没有 intrinsic。
   const CHART: OverlayChartItem = {
-    svg: '<svg />',
-    intrinsic: { width: 140, height: 60 },
+    svg: '<svg viewBox="0 0 140 60"></svg>',
     x: 200,
     y: 100,
     width: 140,
@@ -104,10 +104,49 @@ describe('图表源码的还原', () => {
   it('多张图逐张还原，条数与版位一致', () => {
     const other = { ...CHART, x: 0, y: 295, width: 200, height: 30 }
 
-    expect(chartSourcesOf(BLOCKS, [CHART, other])).toEqual(['graph LR\nA --> B', '正文一段'])
+    expect(chartSourcesOf(BLOCKS, [CHART, other])).toEqual([
+      { source: 'graph LR\nA --> B', exact: false },
+      { source: '正文一段', exact: false },
+    ])
+  })
+
+  it('服务端把渲染成功的源码带出来时优先用它，不再按中心点还原', () => {
+    const withSource: OverlayChartItem = { ...CHART, source: 'graph LR\nA[甲] --> B[乙]' }
+
+    // 这行是相邻图声明行：按中心点归属会被收进源码，而它已被 chartRegionMembers 的 stopAt 排除。
+    const blocks = [
+      ...BLOCKS,
+      { text: 'graph TD', box: { x: 200, y: 140, width: 80, height: 20 } },
+    ]
+
+    expect(chartSourcesOf(blocks, [withSource])).toEqual([
+      { source: 'graph LR\nA[甲] --> B[乙]', exact: true },
+    ])
   })
 
   it('没有图时没有源码', () => {
     expect(chartSourcesOf(BLOCKS, [])).toEqual([])
+  })
+})
+
+describe('图表固有尺寸的读取', () => {
+  it('从 SVG 的 viewBox 读固有尺寸', () => {
+    expect(svgIntrinsicOf('<svg viewBox="0 0 140 60"></svg>')).toEqual({ width: 140, height: 60 })
+    expect(svgIntrinsicOf('<svg viewBox="-10 -20 200 100"></svg>')).toEqual({
+      width: 200,
+      height: 100,
+    })
+  })
+
+  it('没有 viewBox 时退回根元素的宽高属性', () => {
+    expect(svgIntrinsicOf('<svg width="320" height="180"></svg>')).toEqual({
+      width: 320,
+      height: 180,
+    })
+  })
+
+  it('都读不出时返回 null，不拿版位尺寸顶上', () => {
+    expect(svgIntrinsicOf('<svg width="100%"></svg>')).toBeNull()
+    expect(svgIntrinsicOf('<svg />')).toBeNull()
   })
 })

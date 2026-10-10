@@ -1,4 +1,5 @@
 import { RENDER_SITE_DEV_ROUTES, renderSiteDevSamplePath } from '@treen/ipc/routes'
+import type { ChartPlacement } from '@treen/shared/overlay'
 
 /**
  * `/dev/pipeline` 调试页对 dev 端点的调用层。
@@ -43,15 +44,15 @@ export interface PipelineTextPayload {
   clipped: boolean
 }
 
-/** 覆盖计划里的一张图：坐标是 contain 适配后居中过的矩形，SVG 自身按 viewBox 缩放。 */
-export interface PipelineChartPayload {
-  svg: string
-  intrinsic: { width: number; height: number }
-  x: number
-  y: number
-  width: number
-  height: number
-}
+/**
+ * 覆盖计划里的一张图：直接绑定服务端的 `ChartPlacement`，前端不自造形状。
+ *
+ * 服务端把 `OverlayPlan` 原样序列化，图的固有尺寸因此**不在响应里**——版位已按 contain 算好
+ * （width/height 即落点），SVG 自身按 viewBox 缩放。此前这里多写一个 `intrinsic`，真实响应下是
+ * undefined，模板读 `intrinsic.width` 直接抛错把整页渲染带崩；而单测的 fixture 是自己塞的
+ * intrinsic，形态与真响应不一致，于是把失配盖住了。
+ */
+export type PipelineChartPayload = ChartPlacement
 
 export interface PipelinePlan {
   fontFamily: string

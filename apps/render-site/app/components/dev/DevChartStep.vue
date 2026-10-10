@@ -2,12 +2,12 @@
 import { ref, watch } from 'vue'
 import { MERMAID_RENDER_CONFIG, stripMermaidInitDirectives } from '#shared/mermaid-theme'
 import type { DevFailure } from '~/utils/dev-pipeline-client'
-import type { OverlayChartItem } from '~/utils/dev-pipeline-overlay'
+import { svgIntrinsicOf, type ChartSource, type OverlayChartItem } from '~/utils/dev-pipeline-overlay'
 
 const props = defineProps<{
   charts: OverlayChartItem[]
   /** 与 charts 同序的 mermaid 源码，浏览器侧重渲的输入 */
-  sources: string[]
+  sources: ChartSource[]
   diagnostics: string[]
   failure: DevFailure | null
   /** 还没有图可装配 */
@@ -41,15 +41,17 @@ async function renderInBrowser() {
   }
   browserRunning.value = true
   browserError.value = ''
+  // 上一次的产物先清掉：留着会与新的错误信息同屏，看着像「渲出来了但报了错」。
+  browserSvgs.value = []
   try {
     const mermaid = (await import('mermaid')).default
     mermaid.initialize(MERMAID_RENDER_CONFIG as unknown as Parameters<typeof mermaid.initialize>[0])
     const rendered: string[] = []
-    for (const [index, source] of props.sources.entries()) {
+    for (const [index, entry] of props.sources.entries()) {
       // 与服务端同构地先剥 init 指令：源码来自截图 OCR，是十足的不可信输入。
       const { svg } = await mermaid.render(
         `dev-pipeline-chart-${index}`,
-        stripMermaidInitDirectives(source),
+        stripMermaidInitDirectives(entry.source),
       )
       rendered.push(svg)
     }
@@ -65,10 +67,19 @@ async function renderInBrowser() {
 
 function onPath(next: ChartPath) {
   path.value = next
-  // 切到浏览器侧才渲：这是免费的本地渲染，但仍是显式动作，不随装配结果自动跑。
-  if (next === 'browser' && !browserAttempted.value) {
+  // 切到浏览器侧就渲一次：这是免费的本地渲染，但仍是显式动作，不随装配结果自动跑。
+  //
+  // 已尝试过（无论成败）也要重跑：OCR 出的源码不合法恰是这条链路要诊断的常态，一次失败就把
+  // 重试入口关掉，等于逼人重跑整条含计费翻译的装配链路才能再看一眼。
+  if (next === 'browser') {
     void renderInBrowser()
   }
+}
+
+/** 固有尺寸只能从 SVG 里读：服务端只交回版位，不交 intrinsic。读不出就照实说。 */
+function intrinsicLabel(chart: OverlayChartItem): string {
+  const size = svgIntrinsicOf(chart.svg)
+  return size === null ? '读不出' : `${Math.round(size.width)}×${Math.round(size.height)}`
 }
 
 // 换一次装配结果，上一次的浏览器产物就不再对应这批版位；不跟着清会摆出张冠李戴的对比。
@@ -107,7 +118,7 @@ watch(
           :data-active="path === 'browser'"
           @click="onPath('browser')"
         >
-          浏览器 mermaid
+          {{ browserAttempted ? '浏览器 mermaid · 重新渲染' : '浏览器 mermaid' }}
         </button>
         <span class="note">
           浏览器渲得出而服务端渲不出，才是这条链路真正要修的那类问题
@@ -131,7 +142,7 @@ watch(
           <p class="meta">
             #{{ index }} · 版位 {{ Math.round(chart.x) }},{{ Math.round(chart.y) }} ·
             {{ Math.round(chart.width) }}×{{ Math.round(chart.height) }} · 固有
-            {{ Math.round(chart.intrinsic.width) }}×{{ Math.round(chart.intrinsic.height) }}
+            {{ intrinsicLabel(chart) }}
           </p>
 
           <div class="pair">
@@ -156,10 +167,19 @@ watch(
           </div>
 
           <details class="source">
-            <summary>源码（浏览器侧重渲的输入）</summary>
+            <summary>
+              {{ sources[index]?.exact === true ? '源码（服务端渲染成功的那份）' : '源码（按 OCR 块还原）' }}
+            </summary>
             <pre class="code" :data-testid="`dev-pipeline-chart-source-${index}`">{{
-              sources[index] ?? ''
+              sources[index]?.source ?? ''
             }}</pre>
+            <p
+              v-if="sources[index]?.exact === false"
+              class="note"
+              :data-testid="`dev-pipeline-chart-source-restored-${index}`"
+            >
+              输入为还原源码，可能与服务端候选不同
+            </p>
           </details>
         </li>
       </ol>
