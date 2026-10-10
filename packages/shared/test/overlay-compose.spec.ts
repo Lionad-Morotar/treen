@@ -264,6 +264,32 @@ describe('composeOverlayPlan · 图内节点文案翻译', () => {
     expect(plan.charts).toHaveLength(1)
   })
 
+  it('带出的是渲染成功的那份源码：译文版被接收时就是译文版，被拒则是兜底那份', async () => {
+    // 消费方要拿这份源码重渲一遍才能比「为什么你渲得出我渲不出」，取错一份就变成自造差异。
+    const { render, sources } = renderStub()
+    const { translateLabels } = labelTranslator({ 流程甲: 'Process A', 流程乙: 'Process B' })
+
+    const accepted = await composeOverlayPlan(labeledScene(), REGION, { render, translateLabels })
+    expect(accepted.charts[0]?.source).toBe(sources[0])
+    expect(accepted.charts[0]?.source).toContain('Process A')
+
+    const sources2: string[] = []
+    const rejectingRender = async (source: string) => {
+      sources2.push(source)
+      if (source.includes('Process')) {
+        throw new Error('Lexical error')
+      }
+      return { svg: '<svg viewBox="0 0 100 50"></svg>', intrinsic: { width: 100, height: 50 } }
+    }
+
+    const fallback = await composeOverlayPlan(labeledScene(), REGION, {
+      render: rejectingRender,
+      translateLabels,
+    })
+    expect(fallback.charts[0]?.source).toBe(sources2[sources2.length - 1])
+    expect(fallback.charts[0]?.source).toContain('流程甲')
+  })
+
   it('翻译抛错时图用原文渲染，不消失', async () => {
     const { render, sources } = renderStub()
     const warn = vi.fn()

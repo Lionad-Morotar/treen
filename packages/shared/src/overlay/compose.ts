@@ -212,11 +212,15 @@ async function composeCharts(
     }
 
     let rendered: MermaidRenderResult | null = null
+    // 记下成功那份的源码：节点标签翻译成功时它是译文版源码，与「区域内全部行」不是同一份，
+    // 不带出来就得由消费方按自己的行还原，两边比的不是同一份源码。
+    let renderedSource: string | undefined
     let failure: unknown = null
     let covered = members
     for (const attempt of attempts) {
       try {
         rendered = await render(attempt.source)
+        renderedSource = attempt.source
         // memberIndices 是 lines 内的下标，按 members 映射回观察下标才是实际覆盖的成员。
         covered = attempt.memberIndices
           .map((index) => members[index])
@@ -245,7 +249,7 @@ async function composeCharts(
     if (box === null) {
       continue
     }
-    charts.push({ svg: rendered.svg, intrinsic: rendered.intrinsic, box })
+    charts.push({ svg: rendered.svg, intrinsic: rendered.intrinsic, box, source: renderedSource })
   }
   return charts
 }
