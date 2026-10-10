@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url'
 import { RENDER_SITE_DEV_ROUTES, RENDER_SITE_HOST, RENDER_SITE_PORT, RENDER_SITE_ROUTES } from '@treen/ipc'
+import { withoutDevPages } from './app/utils/dev-pages'
 
 // 处理器绝对路径：Nitro 会用别名替换后按 srcDir 解析 handler 路径，传绝对路径可绕开
 // srcDir/别名随版本漂移的歧义（见 nitropack 的 resolveNitroPath）。
@@ -15,6 +16,20 @@ export default defineNuxtConfig({
   ssr: false,
   // 只绑回环，端口取自 @treen/ipc 的共享常量，避免壳层与渲染站各写一份字面量。
   devServer: { host: RENDER_SITE_HOST, port: RENDER_SITE_PORT },
+  hooks: {
+    /**
+     * 非 dev 时把 `/dev` 下的页面从路由表里摘掉。
+     *
+     * 摘路由而非运行时重定向：调试页会把本机 OCR 结果与译文原样摊开，只挡访问的话页面代码
+     * 与它对 dev 端点的调用照样进产物。摘掉路由后打包器也一并摇掉这页独有的代码。
+     * 判定抽在 `app/utils/dev-pages`：dev 与非 dev 两条分支在源码里是同一段，留在闭包里就
+     * 只剩「实跑一次生产构建」这一条验证路径。
+     */
+    'pages:extend'(pages) {
+      const kept = withoutDevPages(pages, process.env.NODE_ENV !== 'production')
+      pages.splice(0, pages.length, ...kept)
+    },
+  },
   nitro: {
     // 路由路径直接由 RENDER_SITE_ROUTES 派生，而非靠 server/api 的文件名恰好同形，
     // 使契约常量成为唯一事实源，两侧不会因改名而漂移。
