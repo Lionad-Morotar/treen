@@ -14,6 +14,10 @@ export const IPC_CHANNELS = {
   settingsGet: 'treen:settings-get',
   /** 以补丁写回用户设置，返回落盘后的完整设置（设置窗 → 主进程） */
   settingsSet: 'treen:settings-set',
+  /** 读热键 capture 状态（吞键是否生效、是否已授权）（设置窗 → 主进程） */
+  hotkeyCaptureStatus: 'treen:hotkey-capture-status',
+  /** 打开系统设置的「输入监控」面板（设置窗 → 主进程） */
+  hotkeyCaptureOpenSettings: 'treen:hotkey-capture-open-settings',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

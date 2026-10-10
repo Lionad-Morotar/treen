@@ -15,6 +15,7 @@ interface ElementLike {
   checked: boolean
   value: string
   textContent: string | null
+  hidden: boolean
   getAttribute(name: string): string | null
   addEventListener(type: string, listener: (event: { target: ElementLike }) => void): void
 }
@@ -36,6 +37,7 @@ interface WindowLike {
   Event: new (type: string) => unknown
   KeyboardEvent: new (type: string, init?: KeyEventInit) => unknown
   treenSettings?: { get(): Promise<unknown>; set(patch: unknown): Promise<unknown> }
+  treenHotkeyCapture?: CaptureBridge
 }
 
 interface Bridge {
@@ -43,9 +45,15 @@ interface Bridge {
   set: ReturnType<typeof vi.fn>
 }
 
+/** 热键 capture 桥的最小面（与 settings-preload.cjs 暴露的一致）。 */
+interface CaptureBridge {
+  status(): Promise<{ active: boolean; authorized: boolean }>
+  openSystemSettings(): Promise<unknown>
+}
+
 const SETTINGS_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'settings.html')
 
-function load(bridge?: Bridge): WindowLike {
+function load(bridge?: Bridge, captureBridge?: CaptureBridge): WindowLike {
   const html = readFileSync(SETTINGS_PATH, 'utf8')
   // 变量中转：本地 jsdom 声明只列了 pretendToBeVisual，这里额外开 runScripts 让内联脚本执行、
   // 用 beforeParse 在脚本运行前把桥注进去。
@@ -55,6 +63,9 @@ function load(bridge?: Bridge): WindowLike {
     beforeParse: (window: unknown) => {
       if (bridge !== undefined) {
         ;(window as { treenSettings?: Bridge }).treenSettings = bridge
+      }
+      if (captureBridge !== undefined) {
+        ;(window as { treenHotkeyCapture?: CaptureBridge }).treenHotkeyCapture = captureBridge
       }
     },
   }
@@ -304,3 +315,56 @@ function dispatchChange(window: WindowLike, id: string): void {
   const target = element as unknown as { dispatchEvent(event: unknown): boolean }
   target.dispatchEvent(new window.Event('change'))
 }
+
+describe('settings.html 的按键捕获状态区', () => {
+  const HINT = 'hotkey-capture-hint'
+  const GRANT = 'hotkey-capture-grant'
+
+  function captureBridgeWith(state: { active: boolean; authorized: boolean }) {
+    return {
+      status: vi.fn(async () => state),
+      openSystemSettings: vi.fn(async () => undefined),
+    }
+  }
+
+  function settingsBridge(): Bridge {
+    return {
+      get: vi.fn(async () => ({ translateText: true, translateCharts: true })),
+      set: vi.fn(async () => ({ translateText: true, translateCharts: true })),
+    }
+  }
+
+  it('capture 生效时说明吞键已接管，不给授权按钮', async () => {
+    const captureBridge = captureBridgeWith({ active: true, authorized: true })
+    const window = load(settingsBridge(), captureBridge)
+    await waitUntil(() => field(window, HINT).textContent?.includes('已捕获') === true)
+    expect(field(window, GRANT).hidden).toBe(true)
+  })
+
+  it('未授权时显示监听模式说明并给出授权入口', async () => {
+    const captureBridge = captureBridgeWith({ active: false, authorized: false })
+    const window = load(settingsBridge(), captureBridge)
+    await waitUntil(() => field(window, HINT).textContent?.includes('监听模式') === true)
+    expect(field(window, GRANT).hidden).toBe(false)
+
+    const target = field(window, GRANT) as unknown as { click(): void }
+    target.click()
+    const opened = await waitUntil(() => captureBridge.openSystemSettings.mock.calls.length > 0)
+    expect(opened).toBe(true)
+  })
+
+  it('授权但通道失效（助手回落）时也按监听模式提示', async () => {
+    const captureBridge = captureBridgeWith({ active: false, authorized: true })
+    const window = load(settingsBridge(), captureBridge)
+    await waitUntil(() => field(window, HINT).textContent?.includes('助手异常') === true)
+    expect(field(window, GRANT).hidden).toBe(true)
+  })
+
+  it('capture 桥缺失时不阻塞设置页主功能，状态行给提示', async () => {
+    const window = load(settingsBridge())
+    // 设置主功能照常：读回值仍落到控件。
+    const applied = await waitUntil(() => field(window, 'setting-translate-charts').checked === true)
+    expect(applied).toBe(true)
+    await waitUntil(() => field(window, HINT).textContent?.includes('监听模式') === true)
+  })
+})

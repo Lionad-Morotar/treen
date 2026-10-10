@@ -159,6 +159,25 @@
       footer[data-kind='error'] {
         color: var(--treen-danger);
       }
+
+      /* 授权跳转按钮：底态即有等宽边框，hover 只换色，不做盒模型变化。 */
+      #hotkey-capture-grant {
+        padding: 6px 14px;
+        border: 1px solid var(--treen-border);
+        border-radius: 4px;
+        background: rgba(34, 184, 230, 0.08);
+        color: var(--treen-accent);
+        font-family: var(--treen-font);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        cursor: pointer;
+        flex: 0 0 auto;
+      }
+
+      #hotkey-capture-grant:hover {
+        background: rgba(34, 184, 230, 0.18);
+        border-color: var(--treen-accent);
+      }
     </style>
   </head>
   <body>
@@ -227,6 +246,21 @@
             spellcheck="false"
           />
         </div>
+        <!-- 热键 capture 状态：吞键是否生效；未授权时给一句话说明与授权入口 -->
+        <div class="treen-row">
+          <div class="treen-row-label">
+            <strong>按键捕获</strong>
+            <span id="hotkey-capture-hint" data-testid="settings-hotkey-capture-hint">检查中…</span>
+          </div>
+          <button
+            id="hotkey-capture-grant"
+            data-testid="settings-hotkey-capture-grant"
+            type="button"
+            hidden
+          >
+            去授权
+          </button>
+        </div>
       </section>
 
       <!-- 保存状态行：读写失败必须可见，否则用户以为改好了 -->
@@ -238,11 +272,14 @@
       // 页面本身不做任何持久化：只负责把控件状态与服务端值对齐、把改动以补丁送回。
       ;(function () {
         var bridge = window.treenSettings
+        var captureBridge = window.treenHotkeyCapture
         var status = document.getElementById('settings-status')
         var TEXT_FIELD = 'setting-translate-text'
         var CHARTS_FIELD = 'setting-translate-charts'
         var NODE_LABELS_FIELD = 'setting-translate-node-labels'
         var HOTKEY_FIELD = 'setting-freeze-accelerator'
+        var CAPTURE_HINT = 'hotkey-capture-hint'
+        var CAPTURE_GRANT = 'hotkey-capture-grant'
 
         // 修饰键本身的 keydown 不构成组合键，按到它们时什么都不做（等真正的那个键）。
         var MODIFIER_KEYS = { Meta: true, Control: true, Alt: true, Shift: true, AltGraph: true }
@@ -385,6 +422,33 @@
         }
 
         document.addEventListener('DOMContentLoaded', function () {
+          // 按键捕获状态是运行时事实（助手可能崩溃回落），读时现查；失败不阻塞设置主功能。
+          if (captureBridge) {
+            captureBridge
+              .status()
+              .then(function (state) {
+                var hint = byId(CAPTURE_HINT)
+                var grant = byId(CAPTURE_GRANT)
+                if (state && state.active) {
+                  hint.textContent = '已捕获按键：冻结热键不再触发其它应用'
+                  grant.hidden = true
+                } else if (state && state.authorized) {
+                  hint.textContent = '监听模式：助手异常，同键位可能同时触发其它应用'
+                  grant.hidden = true
+                } else {
+                  hint.textContent = '监听模式：未授权时同键位可能同时触发其它应用'
+                  grant.hidden = false
+                }
+              })
+              .catch(function () {
+                byId(CAPTURE_HINT).textContent = '监听模式：状态未知'
+              })
+            byId(CAPTURE_GRANT).addEventListener('click', function () {
+              captureBridge.openSystemSettings()
+            })
+          } else {
+            byId(CAPTURE_HINT).textContent = '监听模式：本页需在 Treen 应用内打开'
+          }
           byId(TEXT_FIELD).addEventListener('change', function (event) {
             save({ translateText: event.target.checked })
           })
