@@ -95,16 +95,17 @@ async function requestJson<T>(
 }
 
 /**
- * 端点缺失或非 dev 环境时的中性提示；其余状态码返回 null。
+ * dev 端点被门禁挡成 404 时的中性提示；其余状态码返回 null。
  *
- * 404 在这三条端点上是预期态（生产产物压根不注册它们），说成「服务端异常」会把排障带偏，
- * 故只在这一档补一句说明，其它状态码一律不拿万能文案盖掉 `{ error }` 里的真实原因。
+ * 404 在 dev 端点上是预期态：路由表里一直有它们，是 `server/utils/dev-gate.ts` 按环境挡的
+ * （条数随调试页扩端点而变，故这里不写死）。说成「服务端异常」或「路由没注册」都会把排障带
+ * 偏，故只在这一档补一句说明，其它状态码一律不拿万能文案盖掉 `{ error }` 里的真实原因。
  */
 export function devEndpointHint(status: number): string | null {
   if (status !== 404) {
     return null
   }
-  return 'dev 端点只在 dev server 上注册：当前这个渲染站实例没有这条路由（生产构建下预期如此）。'
+  return 'dev 端点在路由表上，但当前这个渲染站实例不在 dev 环境，一律 404（生产构建下预期如此）。'
 }
 
 export function callOcr(image: string, options: DevCallOptions = {}): Promise<DevCallResult<OcrResponse>> {
