@@ -61,7 +61,7 @@ describe('freezeWindowOptions', () => {
 
 describe('freeze accelerators', () => {
   it('exposes a configurable trigger accelerator', () => {
-    expect(DEFAULT_FREEZE_ACCELERATOR).toBe('CommandOrControl+Shift+X')
+    expect(DEFAULT_FREEZE_ACCELERATOR).toBe('Control+F1')
   })
 
   it('exits on Escape', () => {

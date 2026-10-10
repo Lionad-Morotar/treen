@@ -4,10 +4,14 @@ import type { DisplayLike } from './geometry'
 /**
  * 默认触发热键：用户没写下自己的键位时用这个。
  *
+ * Ctrl+F1 极少与其它应用的全局键位冲突（旧默认 Cmd+Shift+X 会连带触发 VS Code 的扩展面板）。
+ * 注意 capture 吞键通道只承载 Command(+Shift)+单字符键位（tap 按事件字符命中，F1 无字符），
+ * 这个默认键走 globalShortcut 监听模式，不吞键——靠键位本身冷门来避免连带触发。
+ *
  * 热键能被设置项覆盖，但「默认键位」只在这里写一次，设置层的默认值由装配处从这里取，
  * 免得多出一份会漂移的副本。
  */
-export const DEFAULT_FREEZE_ACCELERATOR = 'CommandOrControl+Shift+X'
+export const DEFAULT_FREEZE_ACCELERATOR = 'Control+F1'
 
 /**
  * 冻结态退出键。冻结是模态语义，占用全局 Escape 不会与常态下的其它应用冲突。
