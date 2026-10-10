@@ -1,3 +1,4 @@
+import { devGateNotFound } from '../../utils/dev-gate'
 import { runOcrRequest } from '../../utils/dev-pipeline'
 
 /**
@@ -8,6 +9,9 @@ import { runOcrRequest } from '../../utils/dev-pipeline'
  */
 export default defineEventHandler(async (event) => {
   const outcome = await runOcrRequest(await readBody(event).catch(() => null))
+  if (outcome.gated) {
+    throw createError(devGateNotFound(event.path))
+  }
   setResponseStatus(event, outcome.statusCode)
   return outcome.body
 })

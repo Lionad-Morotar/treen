@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { isDevEnvironment, setDevEnvironmentOverride } from '../server/utils/dev-gate'
+import {
+  devGateNotFound,
+  isDevEnvironment,
+  setDevEnvironmentOverride,
+} from '../server/utils/dev-gate'
 import { runOcrRequest, runPipelineRequest, runTranslateRequest } from '../server/utils/dev-pipeline'
 
 afterEach(() => {
@@ -18,8 +22,24 @@ describe('dev 路由门禁', () => {
 
     for (const outcome of outcomes) {
       expect(outcome.statusCode).toBe(404)
-      expect(outcome.body).toMatchObject({ error: expect.stringContaining('开发环境') })
+      expect(outcome.gated).toBe(true)
     }
+  })
+
+  /**
+   * 门禁的意义在于「看起来像路由不存在」，所以响应体里一个字都不能说明端点性质。
+   * 措辞锚成「路由未命中」那一条（比对时把路径挖掉）：任何为了排障方便加回来的说明性文案
+   * （「仅在开发环境可用」之类）都会让这条变红。
+   */
+  it('门禁不产出任何说明端点性质的响应体', async () => {
+    setDevEnvironmentOverride(false)
+
+    expect(await runTranslateRequest({ texts: ['hi'] })).not.toHaveProperty('body')
+    const notFound = devGateNotFound('/api/dev/ocr?from=scanner')
+    expect(notFound.statusCode).toBe(404)
+    expect(notFound.statusMessage.replace('/api/dev/ocr', '<path>')).toBe(
+      'Cannot find any route matching <path>.',
+    )
   })
 
   it('dev 环境下请求照常进入参数校验（门禁不是无条件拦截）', async () => {
@@ -27,8 +47,7 @@ describe('dev 路由门禁', () => {
 
     const outcome = await runOcrRequest({ texts: [] })
 
-    expect(outcome.statusCode).toBe(400)
-    expect(outcome.body).toMatchObject({ error: expect.any(String) })
+    expect(outcome).toMatchObject({ gated: false, statusCode: 400, body: { error: expect.any(String) } })
   })
 
   it('未注入判定时回退到运行时环境判定', () => {
