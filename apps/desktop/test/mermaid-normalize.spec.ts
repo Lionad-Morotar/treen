@@ -195,3 +195,30 @@ describe('normalizeMermaid · <br/> 劣化形态归一（S14）', () => {
     expect(out.split('\n')[2]).toContain('<br/>compare_anchors.Py')
   })
 })
+
+describe('normalizeMermaid · 箭头断裂修复（真机第二轮样本）', () => {
+  it('拆成两段的箭头合并为单箭头（- --> / - - >）', () => {
+    expect(normalizeMermaid('B2 - --> C')).toContain('B2 --> C')
+    expect(normalizeMermaid('B2 - - > C')).toContain('B2 --> C')
+  })
+
+  it('两横以上后紧跟数字、数字后紧跟结构符：数字是误读的箭头尖，吃掉', () => {
+    expect(normalizeMermaid('A --2|作为参照系|C[x]')).toBe('A -->|作为参照系|C[x]')
+  })
+
+  it('节点 id 里的连字符数字不受影响（A-2 是合法 id）', () => {
+    expect(normalizeMermaid('A-2[label]')).toBe('A-2[label]')
+  })
+
+  it('孤立单短横夹在两个节点形态之间补成箭头（OCR 只认出一横）', () => {
+    expect(normalizeMermaid('WAV[track_full.wav] - A[实测拍网格 beats]')).toBe(
+      'WAV[track_full.wav] --> A[实测拍网格 beats]',
+    )
+  })
+
+  it('正文项目符号与合法的 -- 连线不动', () => {
+    expect(normalizeMermaid('- A comb 可信：双源命中 ≥0.75')).toContain('- A comb 可信')
+    expect(normalizeMermaid('A -- B')).toContain('A -- B')
+    expect(normalizeMermaid('A --- B')).toContain('A --- B')
+  })
+})

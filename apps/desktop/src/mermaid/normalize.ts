@@ -216,6 +216,46 @@ export function normalizeMermaid(source: string): string {
         continue
       }
 
+      if (headChar === '-') {
+        // 断裂的箭头笔画：OCR 把一支箭头拆成两段（- --> / - - >）。拆开的形态必然解析失败，
+        // 合并成单箭头不损失任何合法输入；是否真是图仍由渲染裁决。含点的虚线形态在上面
+        // 已整体识别，不会走到这里。
+        const merged = /^[-—–一]+(?:\s*[-—–一]+)+\s*(?:>|》|〉|→)/.exec(source.slice(index))
+        if (merged !== null) {
+          out += '-->'
+          index += merged[0].length
+          continue
+        }
+      }
+
+      const runLength = cursor - index
+      if (
+        runLength >= 2 &&
+        headChar >= '0' &&
+        headChar <= '9' &&
+        '|[({'.includes(source[head + 1] ?? '')
+      ) {
+        // 箭头的尖被认成数字（--2|标签）：破折号段（两横以上）后紧跟数字、数字后紧跟结构符，
+        // 不构成任何合法 mermaid 语法（合法的节点 id A-2 是单横且直接粘连，runLength 已排除），
+        // 故把数字当误读的箭头尖吃掉。数字后是空白或字母的（正文「- 2 拍」）一律不动。
+        out += '-->'
+        index = head + 1
+        continue
+      }
+
+      if (
+        runLength === 1 &&
+        (out.trimEnd().endsWith(']') || out.trimEnd().endsWith(')')) &&
+        /[A-Za-z0-9_[({［（]/.test(headChar)
+      ) {
+        // 孤立单短横夹在两个节点形态之间（X] - Y[）：OCR 只认出了 --> 的一横。单横连线
+        // 不是合法语法，补成箭头不损失合法输入；两侧限定节点边界（前一个产出字符是节点
+        // 形状收口、后一个非空白字符是节点起头），正文的项目符号「- 文本」不会命中。
+        out += '-->'
+        index = cursor
+        continue
+      }
+
       // 后面不是箭头头：多半是 `--` 连线或标签里的普通连字符，原样保留这段破折号。
       out += source.slice(index, cursor)
       index = cursor
