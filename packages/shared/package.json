@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "共享层：环境读取、日志脱敏与 OCR / 翻译的纯逻辑",
+  "description": "共享层：环境读取、设置与日志脱敏、OCR 与翻译的纯逻辑、几何基元、图表检测归一化与覆盖装配、渲染结果类型",
   "main": "./src/index.ts",
   "exports": {
     ".": {
