@@ -1,15 +1,18 @@
 import { spawn } from 'node:child_process'
+import { IPC_CHANNELS } from '@treen/ipc'
 
 /**
  * 热键 capture 通道：spawn 原生助手（CGEvent tap）在系统派发之前吞掉已注册键位。
  *
  * globalShortcut 在 macOS 不吞事件——按键照旧派发给前台应用（VS Code 的同键位快捷键会被
  * 一并触发），要吞键必须经助手的过滤型 tap，代价是「输入监控」授权。本模块把 spawn、
- * 行协议解析、崩溃重启与退出收口集中在一处，全部依赖（进程创建、真实二进制路径）可注入，
+ * 行协议解析、崩溃降级与退出收口集中在一处，全部依赖（进程创建、真实二进制路径）可注入，
  * 纯 Node 可测；真实装配在 main。
  *
  * 回退语义归调用方（ShortcutManager / 装配层）：spawn 返回 null、available() 变 false、
- * probe 得 false，都意味着「走 globalShortcut，行为等同无本模块」。
+ * probe 得 false，都意味着「走 globalShortcut，行为等同无本模块」。通道失效立刻通知
+ * （unavailable），恢复后同样立刻通知（recovered），键位在两通道间的迁移由 ShortcutManager
+ * 承载——快捷键在崩溃窗口内也不消失。
  */
 
 /** accelerator → 键表条目（tap 侧命中判定用的修饰键与单字符）。 */
@@ -20,13 +23,22 @@ export interface ParsedHotkey {
 }
 
 /**
- * 解析 Electron accelerator。只接受「修饰键 + 单个字母/数字」形态：tap 侧靠事件 unicode
- * 字符命中，功能键（Escape、F1…）没有可靠的字符判定，天然不在 capture 能力内——
- * 这类键位由调用方落回 globalShortcut，而不是在 tap 里猜。
+ * 解析 Electron accelerator 成 capture 键表条目。只接受「Command(+Shift)+单字母/数字」：
+ * - tap 靠事件 unicode 字符命中；Command 不参与布局的字符合成（Cmd+Shift+X 字符仍是大写 X），
+ *   Option/Control 会把字符翻译成别的码位（Option+X → ≈、Control+X → 控制符）、
+ *   裸字符/纯 Shift 会吞掉正常打字、功能键（Escape、F1…）无字符可判——以上一律返回 null，
+ *   由 ShortcutManager 落回 globalShortcut（丢吞键、保功能）。
+ * - Super/Meta 在 Electron 的 macOS 语义就是 Command；本助手是 macOS 专属，其它平台
+ *   不做投机展开。
  */
 export function parseAccelerator(accel: string): ParsedHotkey | null {
+  // 助手按行回显 accelerator，控制字符会劈开行协议，源头就拒掉。
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(accel)) {
+    return null
+  }
   const parts = accel.split('+').map((part) => part.trim()).filter((part) => part.length > 0)
-  if (parts.length === 0) {
+  if (parts.length < 2) {
     return null
   }
   const key = parts[parts.length - 1]
@@ -57,18 +69,20 @@ export function parseAccelerator(accel: string): ParsedHotkey | null {
     modifiers.has('commandorcontrol') ||
     modifiers.has('cmdorctrl') ||
     modifiers.has('command') ||
-    modifiers.has('cmd')
-  const controlLike = modifiers.has('control') || modifiers.has('ctrl')
-  // CommandOrControl 按当前平台展开：macOS 是 Command，其它平台是 Control（Windows 留路时改这里）。
-  const cmd = process.platform === 'darwin' ? commandLike : controlLike
-  const ctrl = process.platform === 'darwin' ? controlLike : commandLike
+    modifiers.has('cmd') ||
+    modifiers.has('super') ||
+    modifiers.has('meta')
+  // 无 Command 的组合（Ctrl/Alt/Shift/裸字符）不是 capture 能力面：字符合成或打字破坏问题。
+  if (process.platform !== 'darwin' || !commandLike) {
+    return null
+  }
   return {
     accel,
     mods: {
-      cmd,
-      ctrl,
+      cmd: true,
+      ctrl: false,
+      opt: false,
       shift: modifiers.has('shift'),
-      opt: modifiers.has('alt') || modifiers.has('option') || modifiers.has('opt'),
     },
     key: key.toLowerCase(),
   }
@@ -140,7 +154,7 @@ export interface CaptureProcessLike {
   stdout: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown } | null
   stderr: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown } | null
   kill(signal?: NodeJS.Signals): boolean
-  on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown
+  on(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown
   on(event: 'error', listener: (error: Error) => void): unknown
 }
 
@@ -153,19 +167,26 @@ export interface HotkeyCaptureLogger {
 
 /** capture 通道当前状态，设置页据此区分「吞键已生效」与「监听模式」。 */
 export interface HotkeyCaptureStatus {
-  /** 助手在岗且 tap 生效（崩溃重启失败后为 false） */
+  /** 装配层是否已确定授权态（启动 probe 完成）；false 时其余字段不可信，UI 应保持检查中 */
+  ready: boolean
+  /** 助手在岗且 tap 生效（崩溃降级期间为 false） */
   active: boolean
-  /** 输入监控授权态（probe 结果；通道不存在时为 false） */
+  /** 输入监控授权态；运行中因权限被撤而降级时翻 false */
   authorized: boolean
+  /** 最近一次降级原因（TAP-ERROR 的 reason 或 spawn 失败信息），无降级为 null */
+  reason: string | null
 }
 
-/** 交给 ShortcutManager 的 capture 通道面：注册面变化时整表同步，命中与失效异步回报。 */
+/**
+ * 交给 ShortcutManager 的 capture 通道面。unavailable 在崩溃瞬间即发（键位立刻迁回
+ * globalShortcut，崩溃窗口内快捷键不断），重启恢复后发 recovered（键位迁回 capture）。
+ */
 export interface HotkeyCaptureChannel {
-  /** 整表替换助手键位表；助手的 set 语义即整表替换，热更新不重启进程。 */
+  /** 整表替换助手键位表；不满足 capture 形态的键位由本模块过滤，助手不收它们。 */
   setHotkeys(accelerators: readonly string[]): void
   onHit(handler: (accelerator: string) => void): void
-  /** 通道失效（崩溃重启失败）：此后 available 为 false，调用方应把键位迁回 globalShortcut。 */
   onUnavailable(handler: (reason: string) => void): void
+  onRecovered(handler: () => void): void
   available(): boolean
   status(): HotkeyCaptureStatus
   dispose(): void
@@ -181,6 +202,9 @@ export interface SpawnChannelOptions {
 
 const DEFAULT_READY_TIMEOUT_MS = 3000
 const RESPAWN_DELAY_MS = 600
+/** 滑动窗口内的崩溃预算：超出即永久降级，不再重启。 */
+const RESPAWN_BUDGET = 3
+const RESPAWN_BUDGET_WINDOW_MS = 60_000
 
 interface ResolvedOptions {
   helperPath: string
@@ -191,38 +215,40 @@ interface ResolvedOptions {
 
 /**
  * 等待一个刚 spawn 的助手报 READY 或失败。READY 前的 TAP-ERROR、异常退出、spawn error、
- * 超时都算启动失败；返回 false 时调用方负责收掉进程。
+ * 超时都算启动失败；失败时带原因（TAP-ERROR 的 reason 优先，供 status 呈现）。
+ * 用 close（stdio 全关）而非 exit 作「没等到结果」的判据：短命进程的 exit 可以先于
+ * 管道里最后几字节送达，exit 判据会抢在 PERMISSION/READY 之前误判失败。
  */
-function awaitReady(proc: CaptureProcessLike, timeoutMs: number): Promise<boolean> {
+function awaitReady(proc: CaptureProcessLike, timeoutMs: number): Promise<{ ok: boolean; reason: string | null }> {
   return new Promise((resolve) => {
     let tapError: string | null = null
     let resolved = false
     const parser = createCaptureLineParser({
-      onReady: () => finish(true),
+      onReady: () => finish({ ok: true, reason: null }),
       onTapError: (reason) => {
         tapError = reason || 'unknown'
-        finish(false)
+        finish({ ok: false, reason: tapError })
       },
     })
-    function finish(ok: boolean): void {
+    function finish(result: { ok: boolean; reason: string | null }): void {
       if (resolved) {
         return
       }
       resolved = true
       clearTimeout(timer)
-      resolve(ok)
+      resolve(result)
     }
     const timer = setTimeout(() => {
       proc.kill('SIGTERM')
-      finish(false)
+      finish({ ok: false, reason: tapError ?? 'timeout' })
     }, timeoutMs)
-    proc.on('exit', () => finish(false))
-    proc.on('error', () => finish(false))
+    proc.on('close', () => finish({ ok: false, reason: tapError ?? 'exited' }))
+    proc.on('error', () => finish({ ok: false, reason: tapError ?? 'spawn-error' }))
     pipeStdoutLines(proc.stdout, (line) => {
       parser(line)
       // READY 处理器已直接 finish；这里兜「一行都没来进程就挂了」之外的 TAP-ERROR 形态。
       if (tapError !== null) {
-        finish(false)
+        finish({ ok: false, reason: tapError })
       }
     })
   })
@@ -240,13 +266,21 @@ function sendSet(proc: CaptureProcessLike, hotkeys: readonly string[]): void {
   try {
     proc.stdin?.write(JSON.stringify({ op: 'set', hotkeys: hotkeyEntries(hotkeys) }) + '\n')
   } catch {
-    // stdin 已随进程退出关闭：exit 事件会接手崩溃处置
+    // stdin 已随进程退出关闭：close 事件会接手崩溃处置
   }
+}
+
+function defaultSpawn(command: string, args: readonly string[]): CaptureProcessLike {
+  return spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] })
 }
 
 /**
  * spawn 助手并建立通道。返回 null 的全部形态：二进制缺失（spawn ENOENT）、未授权
  * （TAP-ERROR permission-denied）、启动超时——调用方一律回退 globalShortcut。
+ *
+ * 崩溃处置：立刻发 unavailable（键位迁回 globalShortcut），随后按预算自动重启；恢复 READY
+ * 后发 recovered（键位迁回 capture）。预算（滑动窗口内 RESPAWN_BUDGET 次崩溃）耗尽即永久
+ * 降级——权限被撤或二进制损坏时，重启风暴只会反复吞掉启动期按键。
  */
 export async function spawnHotkeyCaptureChannel(options: SpawnChannelOptions): Promise<HotkeyCaptureChannel | null> {
   const resolved: ResolvedOptions = {
@@ -261,29 +295,65 @@ export async function spawnHotkeyCaptureChannel(options: SpawnChannelOptions): P
   } catch {
     return null
   }
-  if (!(await awaitReady(proc, resolved.timeoutMs))) {
+  const boot = await awaitReady(proc, resolved.timeoutMs)
+  if (!boot.ok) {
     try {
       proc.kill('SIGTERM')
     } catch {
       // 进程已自行退出，无需处理
     }
-    resolved.logger?.warn('热键 capture 助手启动失败，回退到 globalShortcut 监听模式')
+    resolved.logger?.warn(
+      `热键 capture 助手启动失败（${boot.reason ?? 'unknown'}），回退到 globalShortcut 监听模式`,
+    )
     return null
   }
 
   let disposed = false
   let active = true
+  let lastReason: string | null = null
   let hitHandler: ((accelerator: string) => void) | null = null
   let unavailableHandler: ((reason: string) => void) | null = null
+  let recoveredHandler: (() => void) | null = null
   let currentHotkeys: readonly string[] = options.hotkeys
+  /** respawn 已 spawn 但尚未结算 READY 的在途进程：dispose 时必须一并收掉。 */
+  let pendingProc: CaptureProcessLike | null = null
+  const crashTimes: number[] = []
   const runtimeParser = createCaptureLineParser({
     onHit: (accel) => hitHandler?.(accel),
     onTapRebuilt: () => resolved.logger?.info('热键 capture tap 被系统禁用后已重建'),
   })
 
+  /** 收掉一个进程：stdin 关闭 + SIGTERM；吞 EPIPE 类写错误（进程可能已死）。 */
+  function terminate(target: CaptureProcessLike): void {
+    try {
+      target.stdin?.end()
+    } catch {
+      // stdin 已随进程退出关闭
+    }
+    try {
+      target.kill('SIGTERM')
+    } catch {
+      // 进程已自行退出
+    }
+  }
+
   function attachRuntime(target: CaptureProcessLike): void {
     pipeStdoutLines(target.stdout, runtimeParser)
-    target.on('exit', (code) => {
+    // stderr 只采前几行：dyld/Swift 运行时的报错是「回退监听模式」时最关键的诊断面，
+    // 但它可能持续输出，全量转发会刷屏。管道必须有人读，否则缓冲写满会顶住助手。
+    let stderrLines = 0
+    target.stderr?.on('data', (chunk) => {
+      if (stderrLines >= 5 || disposed) {
+        return
+      }
+      const text = (typeof chunk === 'string' ? chunk : chunk.toString()).trim()
+      if (text.length === 0) {
+        return
+      }
+      stderrLines += 1
+      resolved.logger?.warn(`助手 stderr：${text.split('\n')[0] ?? ''}`)
+    })
+    target.on('close', (code) => {
       if (!disposed) {
         respawn(String(code ?? 'signal'))
       }
@@ -296,10 +366,20 @@ export async function spawnHotkeyCaptureChannel(options: SpawnChannelOptions): P
   }
 
   function respawn(reason: string): void {
-    // 助手崩溃只自动重启一次：反复重启大概率是权限被撤或二进制损坏，重启风暴只会反复
-    // 吞掉启动期按键。重启失败即落 unavailable，ShortcutManager 把键位迁回 globalShortcut
-    // ——快捷键从不静默消失，只是退回监听模式。
+    // 崩溃瞬间即宣布降级：ShortcutManager 立刻把键位迁回 globalShortcut，重启窗口内
+    // 快捷键照常工作，只是退回监听模式（不吞键）。
     active = false
+    lastReason = reason
+    unavailableHandler?.(reason)
+    const now = Date.now()
+    while (crashTimes.length > 0 && now - (crashTimes[0] ?? 0) > RESPAWN_BUDGET_WINDOW_MS) {
+      crashTimes.shift()
+    }
+    crashTimes.push(now)
+    if (crashTimes.length > RESPAWN_BUDGET) {
+      resolved.logger?.warn(`热键 capture 助手在 ${RESPAWN_BUDGET_WINDOW_MS / 1000}s 内已崩溃 ${crashTimes.length} 次，停止重启并保持监听模式`)
+      return
+    }
     setTimeout(() => {
       if (disposed) {
         return
@@ -308,27 +388,32 @@ export async function spawnHotkeyCaptureChannel(options: SpawnChannelOptions): P
       try {
         next = resolved.spawn(resolved.helperPath, buildArgs(currentHotkeys))
       } catch {
-        unavailableHandler?.(reason)
         return
       }
-      void awaitReady(next, resolved.timeoutMs).then((ok) => {
+      pendingProc = next
+      void awaitReady(next, resolved.timeoutMs).then((boot) => {
+        if (pendingProc === next) {
+          pendingProc = null
+        }
         if (disposed) {
+          // dispose 与在途 respawn 竞争：这个新进程还没有任何引用指向它，
+          // 不收掉就会永久持有吞键 tap 而无人能及。
+          terminate(next)
           return
         }
-        if (!ok) {
-          try {
-            next.kill('SIGTERM')
-          } catch {
-            // 进程已自行退出
-          }
-          unavailableHandler?.(reason)
+        if (!boot.ok) {
+          terminate(next)
+          // 权限类失败要回流到状态面：设置页据此给出「去授权」入口。
+          lastReason = boot.reason ?? lastReason
           return
         }
         active = true
+        lastReason = null
         proc = next
         attachRuntime(next)
         sendSet(next, currentHotkeys)
         resolved.logger?.info('热键 capture 助手已重启恢复')
+        recoveredHandler?.()
       })
     }, RESPAWN_DELAY_MS)
   }
@@ -348,29 +433,31 @@ export async function spawnHotkeyCaptureChannel(options: SpawnChannelOptions): P
     onUnavailable(handler) {
       unavailableHandler = handler
     },
+    onRecovered(handler) {
+      recoveredHandler = handler
+    },
     available: () => active && !disposed,
-    status: () => ({ active: active && !disposed, authorized: true }),
+    status: () => ({
+      ready: true,
+      active: active && !disposed,
+      // 权限类失败（tap 建不起来）意味着授权已不可信，让设置页给出授权入口；
+      // 其余失败（被杀等）授权仍然成立。
+      authorized: lastReason === null || !lastReason.includes('permission'),
+      reason: lastReason,
+    }),
     dispose() {
       if (disposed) {
         return
       }
       disposed = true
-      try {
-        proc.stdin?.end()
-      } catch {
-        // stdin 已随进程退出关闭
-      }
-      try {
-        proc.kill('SIGTERM')
-      } catch {
-        // 进程已自行退出
+      terminate(proc)
+      // 在途 respawn 的进程同样收掉（不等它的 READY/超时结算）。
+      if (pendingProc !== null) {
+        terminate(pendingProc)
+        pendingProc = null
       }
     },
   }
-}
-
-function defaultSpawn(command: string, args: readonly string[]): CaptureProcessLike {
-  return spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] })
 }
 
 /**
@@ -410,7 +497,8 @@ export function probeHotkeyCapturePermission(options: {
       proc.kill('SIGTERM')
       finish(null)
     }, timeoutMs)
-    proc.on('exit', () => finish(null))
+    // close（stdio 全关）才判定「没拿到结果」：exit 可先于管道数据送达，会抢跑误判。
+    proc.on('close', () => finish(null))
     proc.on('error', () => finish(null))
     pipeStdoutLines(proc.stdout, parser)
   })
@@ -425,25 +513,20 @@ export interface IpcMainLike {
   handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): unknown
 }
 
-/** 两个 IPC 通道名；缺省值与 @treen/ipc 的 IPC_CHANNELS 字面量重复，由测试对拍防漂移。 */
-export interface HotkeyCaptureIpcChannels {
-  hotkeyCaptureStatus: string
-  hotkeyCaptureOpenSettings: string
-}
-
 /**
- * 设置页读 capture 状态与跳转系统设置的两个通道。状态由装配层闭包供给（通道随时可能
- * 崩溃回落，读时现查而不是注册时快照）。
+ * 设置页读 capture 状态与跳转系统设置的两个通道，缺省值即 @treen/ipc 的单一事实源
+ * （channels 注入仅供测试）。状态由装配层闭包供给（通道随时可能崩溃回落，读时现查
+ * 而不是注册时快照）。
  */
 export function registerHotkeyCaptureIpc(options: {
   ipc: IpcMainLike
   status: () => HotkeyCaptureStatus
   openSystemSettings: () => void
-  channels?: HotkeyCaptureIpcChannels
+  channels?: { hotkeyCaptureStatus: string; hotkeyCaptureOpenSettings: string }
 }): void {
   const channels = options.channels ?? {
-    hotkeyCaptureStatus: 'treen:hotkey-capture-status',
-    hotkeyCaptureOpenSettings: 'treen:hotkey-capture-open-settings',
+    hotkeyCaptureStatus: IPC_CHANNELS.hotkeyCaptureStatus,
+    hotkeyCaptureOpenSettings: IPC_CHANNELS.hotkeyCaptureOpenSettings,
   }
   options.ipc.handle(channels.hotkeyCaptureStatus, () => options.status())
   options.ipc.handle(channels.hotkeyCaptureOpenSettings, () => options.openSystemSettings())

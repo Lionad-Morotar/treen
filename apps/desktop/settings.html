@@ -422,27 +422,38 @@
         }
 
         document.addEventListener('DOMContentLoaded', function () {
-          // 按键捕获状态是运行时事实（助手可能崩溃回落），读时现查；失败不阻塞设置主功能。
+          // 按键捕获状态是运行时事实（助手可能崩溃回落），读时现查；主进程 probe 未完成时
+          // ready=false（窗口比装配先就绪），保持「检查中」并在短窗后重查，不做无限轮询。
           if (captureBridge) {
-            captureBridge
-              .status()
-              .then(function (state) {
-                var hint = byId(CAPTURE_HINT)
-                var grant = byId(CAPTURE_GRANT)
-                if (state && state.active) {
-                  hint.textContent = '已捕获按键：冻结热键不再触发其它应用'
-                  grant.hidden = true
-                } else if (state && state.authorized) {
-                  hint.textContent = '监听模式：助手异常，同键位可能同时触发其它应用'
-                  grant.hidden = true
+            var capturePolls = 0
+            function applyCaptureState(state) {
+              var hint = byId(CAPTURE_HINT)
+              var grant = byId(CAPTURE_GRANT)
+              if (!state || state.ready !== true) {
+                if (capturePolls < 20) {
+                  capturePolls += 1
+                  setTimeout(function () {
+                    captureBridge.status().then(applyCaptureState).catch(function () {})
+                  }, 500)
                 } else {
-                  hint.textContent = '监听模式：未授权时同键位可能同时触发其它应用'
-                  grant.hidden = false
+                  hint.textContent = '监听模式：状态未知'
                 }
-              })
-              .catch(function () {
-                byId(CAPTURE_HINT).textContent = '监听模式：状态未知'
-              })
+                return
+              }
+              if (state.active) {
+                hint.textContent = '已捕获按键：冻结热键不再触发其它应用'
+                grant.hidden = true
+              } else if (state.authorized) {
+                hint.textContent = '监听模式：助手异常，同键位可能同时触发其它应用'
+                grant.hidden = true
+              } else {
+                hint.textContent = '监听模式：未授权时同键位可能同时触发其它应用'
+                grant.hidden = false
+              }
+            }
+            captureBridge.status().then(applyCaptureState).catch(function () {
+              byId(CAPTURE_HINT).textContent = '监听模式：状态未知'
+            })
             byId(CAPTURE_GRANT).addEventListener('click', function () {
               captureBridge.openSystemSettings()
             })

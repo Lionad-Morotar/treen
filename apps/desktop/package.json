@@ -7,6 +7,7 @@
   "main": "./out/main.cjs",
   "scripts": {
     "build": "vite build",
+    "build:hotkey-capture": "bash scripts/build-hotkey-capture.sh",
     "start": "electron .",
     "smoke:app": "vite build && node test/e2e/app-boot-smoke.mjs",
     "smoke:freeze": "vite build --config vite.config.smoke.ts && electron out/freeze-smoke.cjs",

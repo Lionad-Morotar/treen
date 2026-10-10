@@ -18,8 +18,11 @@
 //           "ctrl":false,"opt":false},"key":"x"}
 //
 // 命中判定用「修饰键 flags + 事件的 unicode 字符」，不用 keyCode：keyCode 依赖键盘布局，
-// Electron globalShortcut 在非 QWERTY 布局下失效正是这个原因。字符取
-// charactersIgnoringModifiers（Shift 按下时 characters 会变大写），两侧统一小写比较。
+// Electron globalShortcut 在非 QWERTY 布局下失效正是这个原因。因此本 tap 只承载
+// Command(+Shift)+单字符键位：Command 不参与布局的字符合成（Cmd+Shift+X 的字符仍是大写 X），
+// 而 Option/Control 会把字符翻译成别的码位（Option+X → ≈、Control+X → 控制符），
+// 这类键位由 TS 侧 parseAccelerator 拒收、留在 globalShortcut 上。字符按小写比较，
+// 抹平 Shift 的大小写变换。
 
 import CoreGraphics
 import Foundation
@@ -33,6 +36,9 @@ struct HotkeyEntry {
     let key: String
 }
 
+// 键位表被两个线程触碰：stdin 后台队列整表写、tap 回调（主 runloop 线程）遍历读。
+// Array 赋值不是原子操作，无锁时读侧可能拿到半更新的 buffer，故读写都持同一把锁。
+var hotkeysLock = os_unfair_lock()
 var hotkeys: [HotkeyEntry] = []
 var eventTap: CFMachPort?
 
@@ -75,7 +81,9 @@ func listenStdin() {
                       let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       message["op"] as? String == "set",
                       let payload = message["hotkeys"] as? [[String: Any]] else { continue }
+                os_unfair_lock_lock(&hotkeysLock)
                 hotkeys = parseHotkeys(payload)
+                os_unfair_lock_unlock(&hotkeysLock)
             }
         }
         // stdin 关闭即宿主要收掉助手：主动退出，不留孤儿进程等宿主 kill。
@@ -90,11 +98,14 @@ func tapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refc
             CGEvent.tapEnable(tap: tap, enable: true)
             emit("TAP-REBUILT")
         }
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
     guard type == .keyDown else {
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
+    // 键盘自动重复：长按产生的重复 keyDown 照样吞掉（前台应用不应收到），但不重复触发
+    // 动作——否则长按热键会让冻结态反复进出，覆盖层闪烁、截屏风暴。
+    let autorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
     // flags 的非修饰位（如 non-coalesced 标记）不参与 contains 判定，无需先掩码。
     let flags = event.flags
     let wantCmd = flags.contains(.maskCommand)
@@ -107,17 +118,25 @@ func tapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refc
     var length = 0
     event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &length, unicodeString: &chars)
     guard length > 0 else {
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
     let key = String(utf16CodeUnits: chars, count: length).lowercased()
-    for entry in hotkeys where entry.key == key
+    os_unfair_lock_lock(&hotkeysLock)
+    let snapshot = hotkeys
+    os_unfair_lock_unlock(&hotkeysLock)
+    for entry in snapshot where entry.key == key
         && entry.cmd == wantCmd && entry.shift == wantShift
         && entry.ctrl == wantCtrl && entry.opt == wantOpt {
-        emit("HIT \(entry.accel)")
+        if !autorepeat {
+            emit("HIT \(entry.accel)")
+        }
         // 返回 nil：事件在 headInsert 位置被吞，前台应用收不到这次按键。
         return nil
     }
-    return Unmanaged.passRetained(event)
+    // 原样放行必须用 passUnretained：传入的 event 由系统 retain 并在回调返回后 release，
+    // 只有返回「不同的 event」系统才额外 release 那份返回值；passRetained 声明转移的 +1
+    // 永远无人平衡，全系统每个按键都会泄漏一个事件对象。
+    return Unmanaged.passUnretained(event)
 }
 
 // --probe 只查询授权态（CGPreflight 不弹系统弹窗），供桥接层在装配前探测；

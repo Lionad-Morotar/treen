@@ -320,9 +320,9 @@ describe('settings.html 的按键捕获状态区', () => {
   const HINT = 'hotkey-capture-hint'
   const GRANT = 'hotkey-capture-grant'
 
-  function captureBridgeWith(state: { active: boolean; authorized: boolean }) {
+  function captureBridgeWith(state: { ready?: boolean; active: boolean; authorized: boolean }) {
     return {
-      status: vi.fn(async () => state),
+      status: vi.fn(async () => ({ ready: true, ...state })),
       openSystemSettings: vi.fn(async () => undefined),
     }
   }
@@ -366,5 +366,18 @@ describe('settings.html 的按键捕获状态区', () => {
     const applied = await waitUntil(() => field(window, 'setting-translate-charts').checked === true)
     expect(applied).toBe(true)
     await waitUntil(() => field(window, HINT).textContent?.includes('监听模式') === true)
+  })
+
+  it('主进程 probe 未完成（ready=false）时保持检查中，就绪后重查并更新', async () => {
+    const captureBridge = captureBridgeWith({ ready: false, active: false, authorized: false })
+    const window = load(settingsBridge(), captureBridge)
+    // 就绪前的查询不切文案（避免把未授权误报给已授权机器），保持「检查中」。
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(field(window, HINT).textContent).toBe('检查中…')
+    // 就绪后重查落定最终态。
+    captureBridge.status.mockResolvedValue({ ready: true, active: false, authorized: false })
+    const settled = await waitUntil(() => field(window, HINT).textContent?.includes('监听模式') === true)
+    expect(settled).toBe(true)
+    expect(field(window, GRANT).hidden).toBe(false)
   })
 })

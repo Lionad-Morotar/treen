@@ -119,12 +119,14 @@ interface CaptureHarness {
   available: ReturnType<typeof vi.fn>
   hit: (accelerator: string) => void
   unavailable: (reason: string) => void
+  recovered(): void
   dispose: ReturnType<typeof vi.fn>
 }
 
 function createCaptureHarness(availableNow = true): CaptureHarness {
   let hitHandler: ((accelerator: string) => void) | null = null
   let unavailableHandler: ((reason: string) => void) | null = null
+  let recoveredHandler: (() => void) | null = null
   let up = availableNow
   const setHotkeys = vi.fn()
   const available = vi.fn(() => up)
@@ -139,6 +141,9 @@ function createCaptureHarness(availableNow = true): CaptureHarness {
       onUnavailable: (handler) => {
         unavailableHandler = handler
       },
+      onRecovered: (handler) => {
+        recoveredHandler = handler
+      },
       dispose: dispose as unknown as ShortcutCaptureChannel['dispose'],
     },
     setHotkeys,
@@ -148,6 +153,11 @@ function createCaptureHarness(availableNow = true): CaptureHarness {
       // 替身语义对齐真通道：失效通知即 available 翻 false。
       up = false
       unavailableHandler?.(reason)
+    },
+    recovered: () => {
+      // 恢复通知即 available 翻 true。
+      up = true
+      recoveredHandler?.()
     },
     dispose,
   }
@@ -230,7 +240,7 @@ describe('ShortcutManager with capture channel', () => {
     expect(manager.registeredAccelerators()).toEqual([])
   })
 
-  it('disposes the capture channel on unregisterAll', () => {
+  it('leaves the channel alive on unregisterAll: disposal belongs to the assembly layer', () => {
     const harness = createHarness()
     const capture = createCaptureHarness()
     const manager = new ShortcutManager(harness.registrar, capture.channel)
@@ -238,10 +248,45 @@ describe('ShortcutManager with capture channel', () => {
     manager.register('CommandOrControl+Shift+X', () => {})
     manager.unregisterAll()
 
-    // capture 侧的键不逐个退 global（本来就没在那边），随通道 dispose 一起消失。
+    // capture 侧的键不逐个退 global（本来就没在那边）；通道的生死归装配层，
+    // unregisterAll 只清键位，不收通道（main 的退出钩子已单独 dispose）。
     expect(harness.unregister).not.toHaveBeenCalled()
-    expect(capture.dispose).toHaveBeenCalledTimes(1)
+    expect(capture.dispose).not.toHaveBeenCalled()
     expect(manager.registeredAccelerators()).toEqual([])
+  })
+
+  it('migrates degraded accelerators back to capture when the helper recovers', () => {
+    const harness = createHarness()
+    const capture = createCaptureHarness()
+    const manager = new ShortcutManager(harness.registrar, capture.channel)
+    const handler = vi.fn()
+
+    manager.register('CommandOrControl+Shift+X', handler)
+    capture.unavailable('crashed')
+    expect(harness.register).toHaveBeenCalledWith('CommandOrControl+Shift+X', handler)
+
+    capture.recovered()
+
+    // 恢复后键位迁回 capture：global 侧注销、键表重新下发。
+    expect(harness.unregister).toHaveBeenCalledWith('CommandOrControl+Shift+X')
+    expect(capture.setHotkeys).toHaveBeenLastCalledWith(['CommandOrControl+Shift+X'])
+    capture.hit('CommandOrControl+Shift+X')
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps owned semantics when a degraded accelerator cannot re-register on global', () => {
+    const harness = createHarness((accelerator) => accelerator !== 'CommandOrControl+Shift+X')
+    const capture = createCaptureHarness()
+    const manager = new ShortcutManager(harness.registrar, capture.channel, {
+      warn: vi.fn(),
+      info: vi.fn(),
+    })
+
+    manager.register('CommandOrControl+Shift+X', () => {})
+    capture.unavailable('crashed')
+
+    // global 侧被占（迁移失败）：键位保留在 owned 里，注销语义仍然正确。
+    expect(manager.registeredAccelerators()).toEqual(['CommandOrControl+Shift+X'])
   })
 
   it('ignores capture hits for accelerators it no longer owns', () => {
