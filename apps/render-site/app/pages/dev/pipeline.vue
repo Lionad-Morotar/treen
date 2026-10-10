@@ -77,6 +77,8 @@ const diagnostics = ref<string[]>([])
 const chartElapsed = ref<number | null>(null)
 const chartFailure = ref<DevFailure | null>(null)
 const chartRunning = ref(false)
+/** 图表这一步的旁白：结果被丢弃等「没失败但也没落地」的情形，不能混进 failure 里当作服务端错误 */
+const chartNotice = ref('')
 
 const dragging = ref(false)
 
@@ -138,6 +140,7 @@ function invalidatePlan() {
   diagnostics.value = []
   chartElapsed.value = null
   chartFailure.value = null
+  chartNotice.value = ''
 }
 
 function setImage(name: string, dataUrl: string) {
@@ -265,12 +268,20 @@ async function runCharts() {
   if (current === null) {
     return
   }
+  // 认下发起时的那张图：端点要跑数秒，期间换图已由 setImage 作废了下游，
+  // 再无条件落地就把上一张图的译文与版位压到新图上，坐标全错且没有提示。
+  const requested = current.dataUrl
   chartRunning.value = true
   chartFailure.value = null
+  chartNotice.value = ''
   try {
-    const result = await callPipeline(current.dataUrl)
+    const result = await callPipeline(requested)
     chartRunning.value = false
     chartElapsed.value = result.elapsedMs
+    if (image.value?.dataUrl !== requested) {
+      chartNotice.value = '结果属于上一张图，已丢弃'
+      return
+    }
     if (!result.ok) {
       chartFailure.value = result
       return
@@ -483,6 +494,10 @@ onUnmounted(() => {
         :failure="chartFailure"
         :disabled="image === null"
       />
+
+      <p v-if="chartNotice !== ''" class="hint" data-testid="dev-pipeline-chart-notice">
+        {{ chartNotice }}
+      </p>
     </DevPanel>
 
     <!-- 步骤四：覆盖层。原图作底，译文与图表按像素版位压回原位 -->
