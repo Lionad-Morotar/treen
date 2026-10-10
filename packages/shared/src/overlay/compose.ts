@@ -1,10 +1,10 @@
 import { detectMermaidBlocks, hasStructuralLine, isDiagramDeclaration, looksLikeStatementLine } from '../mermaid/detect'
 import { collectNodeLabels, mapNodeLabels } from '../mermaid/labels'
 import { normalizeMermaid } from '../mermaid/normalize'
-import type { MermaidRenderResult } from '../render-site/client'
+import type { MermaidRenderResult } from '../render'
 import { chartRegionMembers, rectOfMembers, type PlacedObservation } from './chart-region'
 import { planOverlay, type OverlayChartInput, type OverlayPlan, type OverlayTextInput } from './layout'
-import type { Rect } from '../freeze/geometry'
+import type { Rect } from '../geometry'
 
 /**
  * 覆盖计划的装配：把翻译链路的产物（带屏幕落点的译文块）拼成渲染层能直接消费的计划。

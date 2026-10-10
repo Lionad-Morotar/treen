@@ -3,7 +3,7 @@ import type { FreezeLogger, RegionLockTarget, RegionTranslateAction } from '../f
 import type { LatestGate } from '../freeze/latest-gate'
 import type { Rect } from '../freeze/geometry'
 import type { TranslateOutcome, TranslatedBlock } from '../translation/link'
-import type { OverlayPlan } from './layout'
+import type { OverlayPlan } from '@treen/shared/overlay'
 
 /**
  * 「锁定一块区域就翻译并覆盖回屏幕」的动作装配（纯逻辑）。

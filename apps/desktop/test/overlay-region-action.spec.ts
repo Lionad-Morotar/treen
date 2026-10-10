@@ -5,7 +5,7 @@ import {
   type OverlayPlanOptions,
   type OverlaySink,
 } from '../src/overlay/region-action'
-import type { OverlayPlan } from '../src/overlay/layout'
+import type { OverlayPlan } from '../src/overlay'
 import type { TranslateOutcome, TranslatedBlock } from '../src/translation/link'
 import type { Rect } from '../src/freeze/geometry'
 import type { TreenSettings } from '@treen/shared'

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { extractMermaidBlocks } from '../src/mermaid'
-import { SCREENSHOT_OCR_ROI } from './mermaid-fixtures'
+// 夹具留在共享层这个唯一真源：真机样本被两边的 spec 共用，复制成两份就会各自漂移。
+import { SCREENSHOT_OCR_ROI } from '../../../packages/shared/test/mermaid-fixtures'
 
 describe('extractMermaidBlocks', () => {
   it('只保留校验通过的候选，并返回归一化后的源码', async () => {

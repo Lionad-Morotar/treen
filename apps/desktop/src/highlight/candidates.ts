@@ -10,7 +10,11 @@
  * 「当前命中的候选区域」取最具体的那个，故小矩形必须叠在大矩形之上；本模块只负责排出次序，
  * 让渲染层用 z-index 直接兑现，判定本身交给浏览器自身的命中测试（见 overlay.html）。
  */
+import { intersectRects } from '@treen/shared/geometry'
 import type { DisplayLike, Rect, Size } from '../freeze/geometry'
+
+// 交集的真源在共享层（覆盖布局与渲染站同用），这里再导出的目的是本模块的既有引用方不必改 import。
+export { intersectRects }
 
 /** edge_det 检出的边界框：坐标是截屏位图的物理像素，原点在图像左上角。 */
 export interface BorderRect {
@@ -90,15 +94,6 @@ function isPlausibleRect(rect: Rect): boolean {
     return false
   }
   return width <= MAX_CANDIDATE_EXTENT && height <= MAX_CANDIDATE_EXTENT
-}
-
-/** 两个矩形的交集；无交集时宽或高为 0。 */
-export function intersectRects(a: Rect, b: Rect): Rect {
-  const x = Math.max(a.x, b.x)
-  const y = Math.max(a.y, b.y)
-  const right = Math.min(a.x + a.width, b.x + b.width)
-  const bottom = Math.min(a.y + a.height, b.y + b.height)
-  return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) }
 }
 
 /**

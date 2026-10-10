@@ -1,6 +1,5 @@
-import { MONOSPACE_FONT_FAMILY, advanceEm } from '@treen/shared/text-metrics'
-import { intersectRects } from '../highlight/candidates'
-import type { Rect } from '../freeze/geometry'
+import { MONOSPACE_FONT_FAMILY, advanceEm } from '../text-metrics'
+import { intersectRects, type Rect } from '../geometry'
 
 /**
  * 覆盖层布局引擎（纯逻辑）：把「一段译文」「一张图」换算成绝对定位的渲染盒。

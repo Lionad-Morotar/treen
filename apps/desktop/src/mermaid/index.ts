@@ -1,8 +1,6 @@
-import { normalizeMermaidCandidates, type MermaidCandidateBlock } from './candidates'
+import { normalizeMermaidCandidates, type MermaidCandidateBlock } from '@treen/shared/mermaid'
 
-export * from './detect'
-export * from './normalize'
-export * from './candidates'
+export * from '@treen/shared/mermaid'
 export { createMermaidValidator } from './parse'
 
 /**

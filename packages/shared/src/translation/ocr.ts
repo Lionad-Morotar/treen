@@ -9,15 +9,11 @@
 /**
  * 轴对齐矩形：左上原点 + 尺寸，单位由上下文给定（DIP 或归一化）。
  *
- * 这里不沿用壳层 freeze/geometry 的同名类型：shared 被渲染站同用，反向依赖桌面域会把 Electron 侧的
- * 形状拖进服务端；而取字只需要结构投影，调用方（桌面帧、渲染站自有形状）按结构兼容传入即可。
+ * 真源在共享层的 geometry，这里再导出以保持既有 import 面不变；取字只需要结构投影，
+ * 调用方（桌面帧、渲染站自有形状）按结构兼容传入即可。
  */
-export interface Rect {
-  x: number
-  y: number
-  width: number
-  height: number
-}
+import type { Rect } from '../geometry'
+export type { Rect }
 
 /** 待识别的帧：OCR 只消费位图数据，源身份与位图尺寸对取字无用，故不列入契约。 */
 export interface OcrFrame {

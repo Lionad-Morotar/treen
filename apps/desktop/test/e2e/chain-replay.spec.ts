@@ -16,9 +16,12 @@ import { ShortcutManager, type ShortcutRegistrar } from '../../src/freeze/shortc
 import type { DisplayLike, Rect, Size } from '../../src/freeze/geometry'
 import { createTranslateSelection } from '../../src/translation/link'
 import type { OcrEngine, OcrObservation } from '../../src/translation'
-import { composeOverlayPlan } from '../../src/overlay/compose'
-import { createLatestGate, createRegionLockAction } from '../../src/overlay'
-import type { OverlayPlan } from '../../src/overlay/layout'
+import {
+  composeOverlayPlan,
+  createLatestGate,
+  createRegionLockAction,
+  type OverlayPlan,
+} from '../../src/overlay'
 import { createRenderSiteClient } from '../../src/render-site/client'
 import { createSelectionCopier } from '../../src/selection/selection'
 import { createCompositeCopier } from '../../src/selection/composite'

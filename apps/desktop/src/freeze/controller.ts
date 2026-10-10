@@ -16,7 +16,7 @@ import {
 } from './window-options'
 import type { ShortcutManager } from './shortcuts'
 import type { Candidate } from '../highlight/candidates'
-import type { OverlayPlan } from '../overlay/layout'
+import type { OverlayPlan } from '../overlay'
 
 /**
  * 冻结态编排：进入时截屏、逐屏建覆盖窗；退出时无条件拆掉全部窗口与快捷键。

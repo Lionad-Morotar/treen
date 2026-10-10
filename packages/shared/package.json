@@ -17,6 +17,22 @@
     "./translation": {
       "types": "./src/translation/index.ts",
       "default": "./src/translation/index.ts"
+    },
+    "./geometry": {
+      "types": "./src/geometry.ts",
+      "default": "./src/geometry.ts"
+    },
+    "./render": {
+      "types": "./src/render.ts",
+      "default": "./src/render.ts"
+    },
+    "./mermaid": {
+      "types": "./src/mermaid/index.ts",
+      "default": "./src/mermaid/index.ts"
+    },
+    "./overlay": {
+      "types": "./src/overlay/index.ts",
+      "default": "./src/overlay/index.ts"
     }
   },
   "scripts": {
