@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted, ref } from 'vue'
 import { MERMAID_THEME_VARIABLES } from '#shared/mermaid-theme'
 import { RENDER_SITE_ROUTES } from '@treen/ipc/routes'
 import {
@@ -79,9 +80,10 @@ async function loadSamples() {
   const result = await callSamples()
   if (!result.ok) {
     samples.value = []
+    // 404 是运行时门禁按环境挡的，端点本身一直在路由表上：照实说，否则排障会去查路由表。
     samplesHint.value =
       result.status === 404
-        ? '样本库端点不在当前实例上（dev 端点只在 dev server 注册）'
+        ? '样本库端点在当前实例上不可用：dev 端点已注册，非 dev 环境一律 404'
         : `样本清单取不到（HTTP ${result.status}）`
     return
   }
@@ -94,11 +96,13 @@ async function loadSamples() {
         : ''
 }
 
-/** 换图即作废下游：识别块与译文都是对上一张图而言的，留着会误导。 */
-function setImage(name: string, dataUrl: string) {
-  notice.value = ''
-  image.value = { name, dataUrl, bytes: bytesOfDataUrl(dataUrl) }
-  imageWarning.value = imagePayloadWarning(image.value.bytes)
+/**
+ * 作废全部下游结果。
+ *
+ * 识别块与译文都是针对某一张具体图而言的，图一变它们就同时失去所指；留着不只是误导，
+ * 还会让「跑翻译」拿一张已不存在的图的文本去打计费端点。
+ */
+function invalidateDownstream() {
   ocrBlocks.value = []
   ocrElapsed.value = null
   ocrFailure.value = null
@@ -107,10 +111,18 @@ function setImage(name: string, dataUrl: string) {
   translateFailure.value = null
 }
 
+function setImage(name: string, dataUrl: string) {
+  notice.value = ''
+  image.value = { name, dataUrl, bytes: bytesOfDataUrl(dataUrl) }
+  imageWarning.value = imagePayloadWarning(image.value.bytes)
+  invalidateDownstream()
+}
+
 function clearImage() {
   image.value = null
   imageWarning.value = null
   notice.value = ''
+  invalidateDownstream()
 }
 
 async function onPick(file: File) {
@@ -231,12 +243,34 @@ function onDrop(event: DragEvent) {
   }
 }
 
-/** 粘贴取图：截图后不落盘直接粘贴是最快的回归路径。 */
-function onPaste(event: ClipboardEvent) {
-  const file = event.clipboardData?.files.item(0) ?? null
-  if (file !== null) {
-    void onPick(file)
+/** 焦点落在这类元素上时，Cmd+V 是编辑文本而不是换图。 */
+function isEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
   }
+  return (
+    target.isContentEditable ||
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement
+  )
+}
+
+/**
+ * 粘贴取图：截图后不落盘直接粘贴是最快的回归路径。
+ *
+ * 只在焦点不在可编辑元素时接管：识别块就是一排输入框，在框里粘贴却被换成另一张图，
+ * 会静默丢掉刚编辑完的文本。接管时掐掉默认行为，免得浏览器把图片再往可编辑区插一次。
+ */
+function onPaste(event: ClipboardEvent) {
+  if (isEditingTarget(event.target)) {
+    return
+  }
+  const file = event.clipboardData?.files.item(0) ?? null
+  if (file === null) {
+    return
+  }
+  event.preventDefault()
+  void onPick(file)
 }
 
 onMounted(() => {
