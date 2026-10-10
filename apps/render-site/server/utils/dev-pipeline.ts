@@ -172,7 +172,7 @@ export async function runTranslate(
   texts: readonly string[],
   deps: DevTranslateDeps = {},
 ): Promise<DevTranslateResult> {
-  const translate = createBatchTranslator({ complete: deps.complete ?? defaultCompleter() })
+  const translate = createBatchTranslator({ complete: lazyCompleter(deps) })
   return { translations: await translate(texts), gated: texts.map(isChineseDominant) }
 }
 
@@ -185,6 +185,22 @@ function defaultCompleter(): TranslateCompleter {
     throw new DevRouteError('未配置 DEEPSEEK_KEY：请在仓库根 .env.local 写入它，或导出同名环境变量', 503)
   }
   return createDeepSeekCompleter()
+}
+
+/**
+ * 出口的惰性包装。
+ *
+ * 不能在参数位上直接 `deps.complete ?? defaultCompleter()`：那样无论有没有文本要译，都会先尝试
+ * 构造真实出口，而未配 DEEPSEEK_KEY 的机器上构造这一步本身就抛 503。批量翻译器对空输入本是一次
+ * 外部调用都不发的 no-op，先构造就把「OCR 跑通了但一张文本块都没有」这类完全不碰翻译的流程
+ * 一并打挂——缺密钥应当在真有东西要译时才成为错误。
+ */
+function lazyCompleter(deps: DevTranslateDeps): TranslateCompleter {
+  let resolved: TranslateCompleter | undefined
+  return (body) => {
+    const complete = deps.complete ?? (resolved ??= defaultCompleter())
+    return complete(body)
+  }
 }
 
 export type DevChartRenderer = (source: string) => Promise<MermaidRenderResult>
@@ -298,7 +314,7 @@ export async function runPipeline(
   let translations: string[]
   let translateMs = 0
   if (translateText) {
-    const translate = createBatchTranslator({ complete: deps.complete ?? defaultCompleter() })
+    const translate = createBatchTranslator({ complete: lazyCompleter(deps) })
     const started = Date.now()
     translations = await translate(texts)
     translateMs = Date.now() - started
@@ -334,7 +350,7 @@ export async function runPipeline(
 
 /** 节点文案翻译复用正文的批量翻译器：同一份门控与降级，不另建一条出口。 */
 function labelTranslator(deps: DevPipelineDeps): (labels: readonly string[]) => Promise<string[]> {
-  return createBatchTranslator({ complete: deps.complete ?? defaultCompleter() })
+  return createBatchTranslator({ complete: lazyCompleter(deps) })
 }
 
 function requireObject(body: unknown): Record<string, unknown> {
@@ -352,9 +368,19 @@ function requireString(body: unknown, field: string): string {
   return value
 }
 
+/**
+ * 取 texts。
+ *
+ * 缺字段或不是数组一律 400，而不是按「空数组」放行：端点明明要求字符串数组，拼错键名或写成
+ * 裸字符串却回 200 空结果，会把消费方的请求形态 bug 静默吞掉——排障时看到的是「翻译没生效」，
+ * 而不是「请求根本没被接受」。与数组内混非字符串同罪（下面那条 400），语义才对得上。
+ */
 function requireTexts(body: unknown): string[] {
   const value = requireObject(body).texts
-  const list: unknown[] = Array.isArray(value) ? [...value] : []
+  if (!Array.isArray(value)) {
+    throw new DevRouteError('请求体需含字符串数组字段 texts')
+  }
+  const list: unknown[] = [...value]
   const texts = list.filter((item): item is string => typeof item === 'string')
   if (texts.length !== list.length) {
     throw new DevRouteError('请求体的 texts 需是字符串数组')

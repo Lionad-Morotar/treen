@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TranslateCompleter } from '@treen/shared/translation'
-import { runTranslate } from '../server/utils/dev-pipeline'
+import { runTranslate, runTranslateRequest } from '../server/utils/dev-pipeline'
 
 /** 取回批量翻译请求里真正送出去的那批文本：门控是否生效只能在这里观察到。 */
 function sentTextsOf(body: unknown): string[] {
@@ -70,5 +70,35 @@ describe('runTranslate', () => {
     expect(sent).toEqual([['alpha', 'beta']])
     expect(result.gated).toEqual([false, false])
     expect(result.translations).toEqual(['译:alpha', '译:beta'])
+  })
+})
+
+/**
+ * 端点盯的是「texts 是字符串数组」这一整个形态：拼错键名或写成裸字符串若按空数组放行，
+ * 消费方拿到 200 空结果会以为「翻译没生效」，真正的请求形态 bug 就被静默吞掉了。
+ */
+describe('runTranslateRequest 的入参校验', () => {
+  it.each([
+    ['texts 缺失', {}],
+    ['texts 是裸字符串（键名或形态写错）', { texts: 'hello' }],
+    ['texts 是对象', { texts: { 0: 'hello' } }],
+  ])('%s → 400', async (_label, body) => {
+    const outcome = await runTranslateRequest(body, { complete: recordingCompleter([]) })
+
+    expect(outcome).toMatchObject({ gated: false, statusCode: 400, body: { error: expect.any(String) } })
+  })
+
+  it('texts 里混非字符串 → 400', async () => {
+    const outcome = await runTranslateRequest({ texts: ['hello', 42] }, {
+      complete: recordingCompleter([]),
+    })
+
+    expect(outcome).toMatchObject({ gated: false, statusCode: 400, body: { error: expect.any(String) } })
+  })
+
+  it('形态正确的空数组是真请求，不该被当成缺参', async () => {
+    const outcome = await runTranslateRequest({ texts: [] }, { complete: recordingCompleter([]) })
+
+    expect(outcome).toMatchObject({ gated: false, statusCode: 200 })
   })
 })
