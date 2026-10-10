@@ -59,6 +59,23 @@ function readString(value: unknown, fallback: string): string {
 }
 
 /**
+ * accelerator 的形态粗校验：ASCII 字母数字段、加号分隔、无空段。
+ *
+ * 设置页曾放行 macOS 死键字符拼出的非法 accelerator（Option(+Shift) 组合的 event.key 是
+ * 「˛」一类的死键字符），而 Electron 对解析不了的 accelerator 在注册/注销时是抛异常而非返回
+ * 失败，异常漏到退出钩子就是主进程崩窗。这里只挡「必然非法」的形态，token 级的合法性
+ * （这个键名 Electron 认不认得）仍归注册层裁决——注册失败会回落，不再崩。
+ */
+function isPlausibleAccelerator(value: string): boolean {
+  return /^(?:[A-Za-z0-9]+)(?:\+[A-Za-z0-9]+)*$/.test(value)
+}
+
+function readAccelerator(value: unknown, fallback: string): string {
+  const text = readString(value, fallback)
+  return isPlausibleAccelerator(text) ? text : fallback
+}
+
+/**
  * 把任意来源的对象归一成合法设置：只认默认值对象声明过的键，逐字段做类型校验，
  * 不符即回落到该字段的默认值。未声明的键直接丢弃（写入端因此天然拒收未知键）。
  *
@@ -68,7 +85,7 @@ function readString(value: unknown, fallback: string): string {
 export function normalizeSettings(raw: unknown, defaults: TreenSettings): TreenSettings {
   const source = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   return {
-    freezeAccelerator: readString(source.freezeAccelerator, defaults.freezeAccelerator),
+    freezeAccelerator: readAccelerator(source.freezeAccelerator, defaults.freezeAccelerator),
     translateText: readBoolean(source.translateText, defaults.translateText),
     translateCharts: readBoolean(source.translateCharts, defaults.translateCharts),
     translateNodeLabels: readBoolean(source.translateNodeLabels, defaults.translateNodeLabels),

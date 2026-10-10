@@ -94,9 +94,16 @@ describe('readSettings', () => {
     expect(readSettings({ file, defaults: DEFAULTS })).toEqual(withDefaults({ translateText: false }))
   })
 
-  it('热键是字符串字段，写什么读回什么', () => {
+  it('热键是字符串字段，合法形态写什么读回什么', () => {
     const file = writeFixture('{"freezeAccelerator": "Alt+T"}\n')
     expect(readSettings({ file, defaults: DEFAULTS }).freezeAccelerator).toBe('Alt+T')
+  })
+
+  it('必然非法的 accelerator 形态回落默认：空段、死键字符等非 ASCII 段', () => {
+    expect(normalizeSettings({ freezeAccelerator: 'Alt+Shift+' }, DEFAULTS)).toEqual(DEFAULTS)
+    expect(normalizeSettings({ freezeAccelerator: 'Alt+Shift+˛' }, DEFAULTS)).toEqual(DEFAULTS)
+    expect(normalizeSettings({ freezeAccelerator: '+X' }, DEFAULTS)).toEqual(DEFAULTS)
+    expect(readSettings({ file: writeFixture('{"freezeAccelerator": "Alt+Shift+˛"}\n'), defaults: DEFAULTS }).freezeAccelerator).toBe(DEFAULTS.freezeAccelerator)
   })
 
   it('JSON 整体损坏时全部默认并记一条告警', () => {
