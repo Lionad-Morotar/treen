@@ -571,7 +571,7 @@ async function verifyLoadingScan(window: BrowserWindow | null): Promise<void> {
   )
   check(
     '扫描线动画挂在伪元素上并循环播放（DOM/CSS 而非 WebGL）',
-    shown.animationName === 'treen-loading-scan' && shown.animationDuration === '2s',
+    shown.animationName === 'treen-loading-scan' && shown.animationDuration === '1.15s',
     { animationName: shown.animationName, animationDuration: shown.animationDuration },
   )
 
