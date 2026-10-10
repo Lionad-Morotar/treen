@@ -15,6 +15,7 @@
     "@treen/ipc": "workspace:*",
     "@treen/shared": "workspace:*",
     "jsdom": "^30.1.2",
+    "mac-ocr": "^1.1.1",
     "mermaid": "^12.1.0",
     "nuxt": "~4.5.2",
     "vue": "^3.5.43"

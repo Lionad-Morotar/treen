@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import { RENDER_SITE_HOST, RENDER_SITE_PORT, RENDER_SITE_ROUTES } from '@treen/ipc'
+import { RENDER_SITE_DEV_ROUTES, RENDER_SITE_HOST, RENDER_SITE_PORT, RENDER_SITE_ROUTES } from '@treen/ipc'
 
 // 处理器绝对路径：Nitro 会用别名替换后按 srcDir 解析 handler 路径，传绝对路径可绕开
 // srcDir/别名随版本漂移的歧义（见 nitropack 的 resolveNitroPath）。
@@ -21,6 +21,25 @@ export default defineNuxtConfig({
     handlers: [
       { route: RENDER_SITE_ROUTES.render, handler: `${handlerDir}render.ts`, method: 'post' },
       { route: RENDER_SITE_ROUTES.health, handler: `${handlerDir}health.ts`, method: 'get' },
+      // dev 调试端点同样由常量派生；它们能传图并调计费的外部 API，非 dev 环境一律 404
+      // （第二道防线在 server/utils/dev-gate.ts）。
+      { route: RENDER_SITE_DEV_ROUTES.ocr, handler: `${handlerDir}dev/ocr.ts`, method: 'post' },
+      {
+        route: RENDER_SITE_DEV_ROUTES.translate,
+        handler: `${handlerDir}dev/translate.ts`,
+        method: 'post',
+      },
+      {
+        route: RENDER_SITE_DEV_ROUTES.pipeline,
+        handler: `${handlerDir}dev/pipeline.ts`,
+        method: 'post',
+      },
     ],
+    externals: {
+      // mac-ocr 随包分发一个 Swift 二进制，靠 `import.meta.url` 解析 `../bin/mac-ocr`
+      // （见 mac-ocr/dist/index.mjs）。一旦被打进 server bundle，import.meta.url 就变成产物自身的
+      // URL，二进制路径算错、OCR 必然失败；钉成外部依赖才能让它在运行时按包所在位置解析。
+      external: ['mac-ocr'],
+    },
   },
 })
