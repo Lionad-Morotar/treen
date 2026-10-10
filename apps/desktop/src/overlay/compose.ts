@@ -151,10 +151,12 @@ async function composeCharts(
     const attempts: Array<{ source: string; lineCount: number }> = []
     for (const attempt of candidateSources) {
       if (lookup !== null) {
-        attempts.push({
-          source: mapNodeLabels(attempt.source, (label) => lookup.get(label) ?? null).output,
-          lineCount: attempt.lineCount,
-        })
+        const mapped = mapNodeLabels(attempt.source, (label) => lookup.get(label) ?? null).output
+        // 译文版与原文版逐字节相同时不重复送渲染：中文标签经语言门控原文回填后，两条尝试本是
+        // 同一份源码，渲染站拒第一条时第二条注定同样失败，白付一次往返还把失败日志搅混。
+        if (mapped !== attempt.source) {
+          attempts.push({ source: mapped, lineCount: attempt.lineCount })
+        }
       }
       attempts.push(attempt)
     }
@@ -218,8 +220,14 @@ export async function composeOverlayPlan(
 
   // 关闭文本翻译时 blocks 的 translation 是空串（翻译步骤被跳过以省一次外部调用）；
   // 那种空盒不该落到覆盖层上，故整批不产出译文——图表已独立成层，不受影响。
+  //
+  // 上屏门控：译文与原文相同的块不产译文盒。语言门控让中文条目以原文回填后，这些块若照常装配，
+  // 屏幕上会被盖一层 OCR 识别出的同文——原字本来是对的，OCR 的错字（如「崩」认成「跚」）反而
+  // 糊在干净的原字上。图表是独立层，中文屏上图照常渲染，不受此门控影响。
   const texts: OverlayTextInput[] = includeTexts
-    ? blocks.map((block) => ({ translation: block.translation, box: block.box }))
+    ? blocks
+        .filter((block) => block.translation !== block.source)
+        .map((block) => ({ translation: block.translation, box: block.box }))
     : []
   return planOverlay({ texts, charts })
 }
