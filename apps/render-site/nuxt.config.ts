@@ -34,6 +34,13 @@ export default defineNuxtConfig({
         handler: `${handlerDir}dev/pipeline.ts`,
         method: 'post',
       },
+      // 样本库同样是 dev-only：它把仓库 zRefs 里的图整份交出，生产产物不该有这条出口。
+      { route: RENDER_SITE_DEV_ROUTES.samples, handler: `${handlerDir}dev/samples.ts`, method: 'get' },
+      {
+        route: RENDER_SITE_DEV_ROUTES.sample,
+        handler: `${handlerDir}dev/sample.ts`,
+        method: 'get',
+      },
     ],
     externals: {
       // mac-ocr 随包分发一个 Swift 二进制，靠 `import.meta.url` 解析 `../bin/mac-ocr`
