@@ -125,19 +125,14 @@
 
       /*
         翻译 loading 层：锁定区域上一条自上而下循环扫过的扫描线（DOM/CSS，不引入 WebGL）。
-        层由主进程按锁定区域摆位（显示器相对 DIP），显隐翻 hidden。位移用 top 百分比动画——
-        transform 的百分比参照伪元素自身高度，按区域高度自适应只能靠包含块百分比。
-
-        扫描体是一条带拖尾的彗尾而不是 1px 细线：深色冻结画面上细线几乎看不见，故给下方 2px 亮芯
-        叠两层辉光（近处锐、远处散），上方挂一段占区域高 22% 的渐隐尾，一次动画把整条彗尾从区域
-        上方扫到下方。层本身再加极淡底色与内描边，让「正在处理的区域」不靠线也能一眼认出。
-        描边用 box-shadow 而非 border，不改变盒模型，层显隐不会有位移。配色沿用锁定色变量。
+        层由主进程按锁定区域摆位（显示器相对 DIP），显隐翻 hidden；线是伪元素，位移用 top
+        百分比动画——transform 的百分比参照线自身（1px 线位移 1px），按区域高度自适应只能靠
+        包含块百分比。配色取锁定色同一变量，不另起一套。辉光比初版略强、周期略快，
+        保证在深色冻结画面上可辨，但不做拖尾与底色那类抢戏的形态（真机观感否决过一版）。
       */
       #treen-loading {
         position: absolute;
         pointer-events: none;
-        background: linear-gradient(180deg, rgba(34, 184, 230, 0.05), rgba(34, 184, 230, 0.1));
-        box-shadow: inset 0 0 0 2px var(--treen-locked);
       }
 
       #treen-loading[hidden] {
@@ -149,26 +144,26 @@
         position: absolute;
         left: 0;
         right: 0;
-        height: 22%;
-        background: linear-gradient(180deg, transparent 40%, var(--treen-locked) 100%);
-        border-bottom: 2px solid var(--treen-locked);
-        box-shadow: 0 0 20px 3px var(--treen-locked), 0 0 64px 12px var(--treen-locked);
-        animation: treen-loading-scan 1.15s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+        top: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, var(--treen-locked), transparent);
+        box-shadow: 0 0 14px 1px var(--treen-locked);
+        animation: treen-loading-scan 1.6s linear infinite;
       }
 
       @keyframes treen-loading-scan {
         from {
-          top: -22%;
+          top: 0;
         }
 
         to {
-          top: 100%;
+          top: calc(100% - 1px);
         }
       }
 
       /*
-        降低动效偏好下不再循环扫：亮芯停在区域中部。闪烁是这条效果最容易引起不适的部分，
-        而「正在处理」这个信息靠静止的亮芯与描边仍在，故去掉的是动画而不是提示。
+        降低动效偏好下不再循环扫：线停在区域中部。闪烁是这条效果最容易引起不适的部分，
+        而「正在处理」这个信息靠静止的线仍在，故去掉的是动画而不是提示。
       */
       @media (prefers-reduced-motion: reduce) {
         #treen-loading::after {
