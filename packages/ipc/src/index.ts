@@ -31,6 +31,22 @@ export const RENDER_SITE_ROUTES = {
 } as const
 
 /**
+ * 渲染站的开发期端点：上传图片跑 OCR、翻译、图表装配，供 `/dev/pipeline` 调试页消费。
+ *
+ * 与 `RENDER_SITE_ROUTES` 分开成表是因为两者的可用性契约不同：后者是生产契约（壳层依赖它，
+ * 改名即断链），前者只在 dev 环境注册、非 dev 一律 404——混在一张表里会让调用方误以为
+ * 这些端点在生产也可用。
+ */
+export const RENDER_SITE_DEV_ROUTES = {
+  /** POST { image } → { blocks, elapsedMs } */
+  ocr: '/api/dev/ocr',
+  /** POST { texts } → { translations, gated } */
+  translate: '/api/dev/translate',
+  /** POST { image, translateText?, translateCharts? } → { blocks, translations, plan, timings, diagnostics } */
+  pipeline: '/api/dev/pipeline',
+} as const
+
+/**
  * 渲染站监听的地址与端口。只绑回环：服务仅供电桌壳层调用，暴露到 LAN 会把本机变成公开渲染端点。
  * 端口固定是为了让壳层能写死基准 URL 而无需运行时发现。
  */
