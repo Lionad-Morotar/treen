@@ -1,4 +1,4 @@
-import { detectMermaidBlocks, hasStructuralLine, isDiagramDeclaration } from '../mermaid/detect'
+import { detectMermaidBlocks, hasStructuralLine, isDiagramDeclaration, looksLikeStatementLine } from '../mermaid/detect'
 import { collectNodeLabels, mapNodeLabels } from '../mermaid/labels'
 import { normalizeMermaid } from '../mermaid/normalize'
 import type { MermaidRenderResult } from '../render-site/client'
@@ -10,9 +10,9 @@ import type { Rect } from '../freeze/geometry'
  * 覆盖计划的装配：把翻译链路的产物（带屏幕落点的译文块）拼成渲染层能直接消费的计划。
  *
  * 这里是图表落点的关键决策点，串起三件事：
- * 1. 用 OCR 观察的文字还原源码文本，做 mermaid 候选检测；
- * 2. 对每个候选，以「声明所在观察」为锚点，用几何连续性求出它占住的那几行，并得到矩形；
- * 3. 把那几行归一化后送渲染站拿 SVG，按 contain 适配进那个矩形。
+ * 1. 用 OCR 观察的文字还原源码文本，做 mermaid 候选检测（声明行丢失的段靠语句行判据兜住）；
+ * 2. 对每个候选，以「声明或段首所在观察」为锚点，用几何连续性求出它占住的那几行，并得到矩形；
+ * 3. 把那几行归一化后（无声明候选补默认声明）送渲染站拿 SVG，按 contain 适配进那个矩形。
  *
  * 源码取「屏幕上占住的那几行」而非检测出的整块，是这里最容易看错的一点：检测以空行划界，而截图里
  * 的图后面往往紧跟正文，整块喂给渲染站只会换回一句语法错，图就静默消失了。屏幕矩形已由几何求出，
@@ -53,23 +53,73 @@ export interface ComposeOverlayDeps {
 }
 
 /**
- * 一个候选块值得送渲染站的源码，按尝试次序排列；`lineCount` 是它覆盖的行数（供重算版位）。
+ * 一个候选块值得送渲染站的源码，按尝试次序排列（最保守 → 最像图）；`memberIndices` 是它覆盖的
+ * 成员下标（几何区域成员数组内的下标，供重算版位）——语句行过滤丢的是中间的垃圾行，候选不再
+ * 恒为区域的「前缀切片」，行数不足以表达覆盖范围。
  *
- * 第一条是几何区域内的全部行。第二条只在「末尾还有非连线行」时才有：图后紧邻正文时（中间的空行
- * 常被 OCR 丢掉），整段注定渲染失败，而图本身是好的——砍掉最后一条连线行之后的行再试一次。
- * 只砍尾部的非连线行，连线行一条不动：按检测层自己的判据，连线行才是图的结构，砍它们才可能得到
- * 与屏幕不符的图。这是**由渲染站裁决**的裁剪，不是对行义的猜测。
+ * 候选序列（S14 起）：
+ * 1. 区域内全部行（历史首选）；
+ * 2. 全区域的尾部裁剪版——图后紧邻正文时（空行常被 OCR 丢掉），砍掉最后一条连线行之后的行；
+ * 3. 只保留像语句的行——真机实测里图的行间会混进箭头变形又粘连正文的垃圾行，整段注定渲染失败
+ *    而图本身是好的，丢掉垃圾行再试；
+ * 4. 上一条的尾部裁剪版。
+ *
+ * **保守在前是刻意反转**（锚点原写「最像图 → 最保守」，审查实证后推翻）：subgraph、participant、
+ * Note、classDef 这类合法的非语句行会被过滤候选丢掉，而裁掉后源码依然合法——渲染站裁决不出
+ * 内容缺失，过滤候选若排前且命中，一张缺内容的错图就静默落地，被丢行的译文又被图版位抑制，
+ * 内容双向丢失。故过滤候选只作 fallback：全区域先试（渲染站拒掉含垃圾行的源码），拒了才轮到
+ * 裁剪。它还须至少含一条结构行才产出——全过滤只剩裸声明时会渲染出空图盖住声明行。
+ *
+ * 只砍尾部的非连线行、过滤只丢不像语句的行：按检测层自己的判据，连线行才是图的结构，动它们才
+ * 可能得到与屏幕不符的图。这是**由渲染站裁决**的裁剪，不是对行义的猜测。相同覆盖范围的候选
+ * 只保留一条（两种裁剪在特定输入下会撞出同一行集，重复送渲染白付一次往返）。
+ *
+ * 候选块没有声明行时补默认声明 `graph LR`：方向缩写只有在 OCR 明确认出（声明行在场）时才采信，
+ * 认不出就用默认——猜方向没有依据。
  */
-function chartSourceCandidates(lines: readonly string[]): Array<{ source: string; lineCount: number }> {
-  const candidates = [{ source: normalizeMermaid(lines.join('\n')), lineCount: lines.length }]
-  const lastStructural = lines.reduce(
-    (last, line, index) => (hasStructuralLine(line) ? index : last),
+export function chartSourceCandidates(lines: readonly string[]): Array<{ source: string; memberIndices: number[] }> {
+  const allIndices = lines.map((_, index) => index)
+  const hasDeclaration = lines.some(isDiagramDeclaration)
+  const candidates: Array<{ source: string; memberIndices: number[] }> = []
+
+  const push = (memberIndices: readonly number[]): void => {
+    const last = candidates[candidates.length - 1]
+    if (last !== undefined && last.memberIndices.length === memberIndices.length && last.memberIndices.every((value, i) => value === memberIndices[i])) {
+      return
+    }
+    const body = memberIndices.map((index) => lines[index] ?? '').join('\n')
+    const source = hasDeclaration ? normalizeMermaid(body) : normalizeMermaid(`graph LR\n${body}`)
+    candidates.push({ source, memberIndices: [...memberIndices] })
+  }
+
+  push(allIndices)
+  const lastStructural = allIndices.reduce(
+    (last, index) => (hasStructuralLine(lines[index] ?? '') ? index : last),
     -1,
   )
-  if (lastStructural >= 0 && lastStructural < lines.length - 1) {
-    const kept = lines.slice(0, lastStructural + 1)
-    candidates.push({ source: normalizeMermaid(kept.join('\n')), lineCount: kept.length })
+  if (lastStructural >= 0 && lastStructural < allIndices.length - 1) {
+    push(allIndices.slice(0, lastStructural + 1))
   }
+
+  // 过滤集合恒含声明行：声明行不是语句行，但它是图的组成，滤掉它会让候选失去声明。
+  const statementIndices = allIndices.filter(
+    (index) => looksLikeStatementLine(lines[index] ?? '') || isDiagramDeclaration(lines[index] ?? ''),
+  )
+  if (
+    statementIndices.length > 0 &&
+    statementIndices.length < allIndices.length &&
+    statementIndices.some((index) => hasStructuralLine(lines[index] ?? ''))
+  ) {
+    push(statementIndices)
+    const lastStructuralInStatement = statementIndices.reduce(
+      (last, index, position) => (hasStructuralLine(lines[index] ?? '') ? position : last),
+      -1,
+    )
+    if (lastStructuralInStatement >= 0 && lastStructuralInStatement < statementIndices.length - 1) {
+      push(statementIndices.slice(0, lastStructuralInStatement + 1))
+    }
+  }
+
   return candidates
 }
 
@@ -87,9 +137,9 @@ async function chartLabelLookup(
     return null
   }
   try {
-    // 候选按「全区域 → 砍尾」排列，首个是超集。图后紧跟正文时候选里会混入正文行，
-    // 其中的括号文本可能被收进标签集合（白付几个 token），但替换只作用于最终渲染成功的
-    // 候选源码，不会把译文写进产物；消除这笔浪费要改标签提取的范围语义，归后续切片。
+    // 候选按「语句行过滤 → 全区域」排列，取首个建对照表（S14 起首个不再恒为后续候选的超集）：
+    // 被过滤掉的垃圾行里的括号文本不进集合，省下白付的 token；某候选若含对照表外的标签，
+    // mapNodeLabels 对缺失标签保留原文，图不受影响。
     const labels = collectNodeLabels(sources[0] ?? '')
     // 一条节点标签都没有（纯连线图）：那次外部调用也省下。
     if (labels.length === 0) {
@@ -111,7 +161,7 @@ async function chartLabelLookup(
 
 /**
  * 把选区里的 mermaid 候选逐个变成图表版位。渲染方由调用方给定——它缺席时整个函数不会被调用。
- * 每个候选的取舍（几何求区域、区域裁剪源码、渲染站裁决、两种源码尝试）见文件头的说明。
+ * 每个候选的取舍（几何求区域、区域裁剪源码、渲染站裁决、候选序列）见文件头的说明。
  */
 async function composeCharts(
   observations: readonly PlacedObservation[],
@@ -145,17 +195,17 @@ async function composeCharts(
 
     // 尝试序列：每个候选先试「节点文案已翻译」的版本，渲染站拒了再退回原文版本——
     // 翻译模型返回的内容可能让源码不合法（括号、引号），图不能因译文而消失。
-    // 全部候选共享一次翻译调用（对照表按首个候选的超集建立）。
+    // 全部候选共享一次翻译调用（对照表按候选序列首个 source 建立）。
     const candidateSources = chartSourceCandidates(lines)
     const lookup = await chartLabelLookup(candidateSources.map((attempt) => attempt.source), translateLabels, logger)
-    const attempts: Array<{ source: string; lineCount: number }> = []
+    const attempts: Array<{ source: string; memberIndices: number[] }> = []
     for (const attempt of candidateSources) {
       if (lookup !== null) {
         const mapped = mapNodeLabels(attempt.source, (label) => lookup.get(label) ?? null).output
         // 译文版与原文版逐字节相同时不重复送渲染：中文标签经语言门控原文回填后，两条尝试本是
         // 同一份源码，渲染站拒第一条时第二条注定同样失败，白付一次往返还把失败日志搅混。
         if (mapped !== attempt.source) {
-          attempts.push({ source: mapped, lineCount: attempt.lineCount })
+          attempts.push({ source: mapped, memberIndices: attempt.memberIndices })
         }
       }
       attempts.push(attempt)
@@ -167,7 +217,10 @@ async function composeCharts(
     for (const attempt of attempts) {
       try {
         rendered = await render(attempt.source)
-        covered = members.slice(0, attempt.lineCount)
+        // memberIndices 是 lines 内的下标，按 members 映射回观察下标才是实际覆盖的成员。
+        covered = attempt.memberIndices
+          .map((index) => members[index])
+          .filter((value): value is number => value !== undefined)
         break
       } catch (error) {
         failure = error

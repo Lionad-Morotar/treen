@@ -5,8 +5,9 @@
  * 否则一段真正的图源码会因为箭头还没被修好而被判为非图。检测只做保守的结构判定，把「是不是有效图」
  * 的最终裁决交给下游的 mermaid.parse()。
  *
- * 判据是「行首图形声明 + 含结构行」双重条件：单看关键词会把正文误判成图（同屏正文里出现 graph 字样
- * 是常见情形），两个条件同时成立才收窄到真正的图源码。
+ * 判据是两条并列的候选条件（详见 detectMermaidBlocks）：「行首图形声明 + 含结构行」与
+ * 「无声明但段内 ≥2 行像连线语句」。单看关键词会把正文误判成图（同屏正文里出现 graph 字样
+ * 是常见情形），行形门槛 looksLikeStatementLine 把正文长句与垃圾行挡在外面。
  */
 
 /** 一段疑似 mermaid 源码的候选块。 */
@@ -111,11 +112,44 @@ export function hasStructuralLine(line: string): boolean {
 const isBlank = (line: string): boolean => line.trim() === ''
 
 /**
+ * 行首标识符：mermaid 节点 id 的字符域（ASCII 字母/下划线起头，可含数字点连字符）。
+ * 数字起头不收——正文里的「0.02 BPM …」这类以数字开头的行借此排除。
+ */
+const LEADING_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_.-]*/
+
+/**
+ * 一行是否「像连线语句」：行首是标识符，且行内含结构特征（箭头/关系算子），或标识符后紧跟
+ * 括号标签（`id[...]`、`id(...)`、`id{...}`）。这是无声明判据的行形门槛，收得比「含箭头」紧：
+ * 中文正文长句不以 ASCII 标识符起头，箭头变形又混入正文的垃圾行（如 `A—-2作为参照系…`，
+ * 标识符后既非箭头头也非括号）也进不来——误收正文当图渲染比漏收更糟。
+ */
+export function looksLikeStatementLine(line: string): boolean {
+  const trimmed = line.trim()
+  if (LEADING_IDENTIFIER.test(trimmed) === false) {
+    return false
+  }
+  if (hasStructuralLine(trimmed)) {
+    return true
+  }
+  return /^[A-Za-z0-9_.-]*\s*[[({]/.test(trimmed)
+}
+
+/**
  * 从文本里检出全部 mermaid 候选块。
  *
- * 块边界取「声明行起、直到首个空行为止的连续非空段」——OCR 出的图源码内部通常没有空行，
- * 空行是最稳的分隔信号。声明行之后必须至少有一行含结构特征（箭头或关系算子），否则不算候选。
- * 结构行之后若不是空行而是紧邻正文，会被并进候选，交由下游 parse 裁决成败（不做猜测式裁剪）。
+ * 块边界取「直到首个空行为止的连续非空段」——OCR 出的图源码内部通常没有空行，空行是最稳的
+ * 分隔信号。产出候选的判据有两条，并列成立其一即可：
+ *
+ * 1. 声明行起头且段内（声明之后）至少一行含结构特征——历史判据；
+ * 2. 无声明行，但段内至少两行像连线语句、且至少两行含结构特征——真机实测里 OCR 会把
+ *    `graph LR` 整行认丢（连 fence 标识也不剩），声明判据下整块静默消失。结构行计数沿用
+ *    hasStructuralLine（箭头或关系算子）而非仅箭头：无声明的 classDiagram 劣化段靠关系算子
+ *    表达结构，只数箭头会让「有声明可检出、无声明检不出」不对称。
+ *
+ * 两条判据都不命中时，扫描从下一行继续（段内剩余部分可能以新段首命中）；命中时候选块的
+ * source 吞整段——紧邻的正文行交由下游 parse 与装配层的语句行过滤裁决，不在检测层做
+ * 猜测式裁剪。已知限制：同段内两张都丢了声明行的紧邻图没有任何文本层分隔信号，只会产出
+ * 一个候选（有声明行的场景由装配层的 stopAt 拆分）。
  */
 export function detectMermaidBlocks(text: string): MermaidCandidate[] {
   const lines = text.split(/\r?\n/)
@@ -123,21 +157,44 @@ export function detectMermaidBlocks(text: string): MermaidCandidate[] {
 
   let index = 0
   while (index < lines.length) {
-    if (isDiagramDeclaration(lines[index] ?? '')) {
-      let end = index
-      while (end + 1 < lines.length && !isBlank(lines[end + 1] ?? '')) {
-        end += 1
-      }
-      const hasStructure = lines.slice(index + 1, end + 1).some(hasStructuralLine)
-      if (hasStructure) {
+    const line = lines[index] ?? ''
+    if (isBlank(line)) {
+      index += 1
+      continue
+    }
+
+    let end = index
+    while (end + 1 < lines.length && !isBlank(lines[end + 1] ?? '')) {
+      end += 1
+    }
+    const segment = lines.slice(index, end + 1)
+
+    // 段内含声明行时按声明判据、从声明行起块——段首可能是 fence 残留（裸 mermaid 标识行），
+    // 它不是图的组成部分，留在 source 里会被下游整段拒绝。
+    const declOffset = segment.findIndex(isDiagramDeclaration)
+    if (declOffset >= 0) {
+      if (segment.slice(declOffset + 1).some(hasStructuralLine)) {
         blocks.push({
-          startLine: index,
+          startLine: index + declOffset,
           endLine: end,
-          source: lines.slice(index, end + 1).join('\n'),
+          source: segment.slice(declOffset).join('\n'),
         })
         index = end + 1
         continue
       }
+      index += 1
+      continue
+    }
+
+    const statementCount = segment.filter(looksLikeStatementLine).length
+    const structuralCount = segment.filter(hasStructuralLine).length
+    if (statementCount >= 2 && structuralCount >= 2) {
+      // 几何锚点取段内首个语句行：整片选区常因观察间无空行而连成一段，段首可能是图上方的
+      // 正文行——从它扩张会把矩形钉在正文上，图反而求不到区域。source 仍取整段交渲染裁决。
+      const firstStatement = segment.findIndex(looksLikeStatementLine)
+      blocks.push({ startLine: index + firstStatement, endLine: end, source: segment.join('\n') })
+      index = end + 1
+      continue
     }
     index += 1
   }

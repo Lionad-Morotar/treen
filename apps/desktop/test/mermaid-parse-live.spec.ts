@@ -1,6 +1,13 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { detectMermaidBlocks } from '../src/mermaid/detect'
 import { createMermaidValidator, extractMermaidBlocks, normalizeMermaid } from '../src/mermaid'
+import { chartSourceCandidates } from '../src/overlay/compose'
 import { SCREENSHOT_OCR_ROI, SCREENSHOT_SOURCE } from './mermaid-fixtures'
+
+/** S14 真机缺陷样本：OCR 完全没认出声明行的 flowchart（含垃圾行与各类箭头劣化）。 */
+const BUG_OCR_SAMPLE = readFileSync(join(import.meta.dirname, 'fixtures/ocr-graph-missing-declaration.txt'), 'utf8')
 
 /**
  * mermaid.parse 的真链路：真实 mermaid（12.x）+ jsdom 垫片在纯 Node 下跑通语法校验。
@@ -42,5 +49,16 @@ describe('mermaid.parse 真链路（Node + jsdom 垫片）', () => {
     const hits = await extractMermaidBlocks(SCREENSHOT_OCR_ROI, { validate })
 
     expect(hits).toHaveLength(1)
+  })
+
+  it('S14 真机缺陷样本（声明行丢失）：检测出候选，装配补声明后至少一条通过 parse', async () => {
+    // 用户实测缺陷的验收口径：OCR 认丢了 `graph LR` 行，此前候选数为 0、源码被当正文译一遍。
+    // 断言不依赖渲染站在跑：装配层（补默认声明 + 归一）的产物由 parse 直接裁决。
+    const candidates = detectMermaidBlocks(BUG_OCR_SAMPLE)
+    expect(candidates.length).toBeGreaterThanOrEqual(1)
+
+    const sources = chartSourceCandidates(candidates[0]!.source.split('\n')).map((attempt) => attempt.source)
+    expect(sources.length).toBeGreaterThanOrEqual(1)
+    expect(await Promise.all(sources.map((source) => validate(source)))).toContain(true)
   })
 })

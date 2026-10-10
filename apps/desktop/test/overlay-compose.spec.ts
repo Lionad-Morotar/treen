@@ -90,9 +90,10 @@ describe('composeOverlayPlan：译文与图的覆盖计划装配', () => {
     expect(plan.texts).toHaveLength(3)
   })
 
-  it('图后紧跟正文时裁掉尾部非连线行重试，图仍落位且版位只算到连线行', async () => {
+  it('图后紧跟正文时全区域候选被拒，由裁剪候选兜底，版位只算到连线行', async () => {
     const { render, sources } = strictRender()
-    // 三行挨得很近（含紧跟的正文），几何上连成一片，源码裁剪无从下手——只能由渲染站裁决。
+    // 三行挨得很近（含紧跟的正文），几何上连成一片。全区域候选先试（被正文行拖挂拒绝），
+    // 砍尾候选与语句行过滤候选撞出同一行集只发一次，图仍出来。
     const blocks: OverlayBlock[] = [
       { source: 'graph LR', translation: '图声明', box: { x: 200, y: 100, width: 80, height: 20 } },
       { source: 'A --> B', translation: '甲到乙', box: { x: 200, y: 125, width: 140, height: 20 } },
@@ -108,6 +109,26 @@ describe('composeOverlayPlan：译文与图的覆盖计划装配', () => {
     const chart = plan.charts[0]!
     expect(chart.y + chart.height).toBeLessThanOrEqual(145)
     expect(plan.texts.map((text) => text.lines.join(''))).toEqual(['Trailing prose.'])
+  })
+
+  it('末行像语句但非连线行时靠砍尾候选重试成功', async () => {
+    const { render, sources } = strictRender()
+    // 末行形如「id[标签]」（像语句、无箭头），语句行过滤放它过、结构计数又不认它——
+    // 首候选整段被渲染站拒后，仍由砍掉尾部残句的候选兜底，图不因一行残句消失。
+    const blocks: OverlayBlock[] = [
+      { source: 'graph LR', translation: '图声明', box: { x: 200, y: 100, width: 80, height: 20 } },
+      { source: 'A --> B', translation: '甲到乙', box: { x: 200, y: 125, width: 140, height: 20 } },
+      { source: 'B1[图后紧跟的正文行]', translation: '残句行', box: { x: 200, y: 150, width: 200, height: 20 } },
+    ]
+
+    const plan = await composeOverlayPlan(blocks, REGION, { render })
+
+    expect(sources).toHaveLength(2)
+    expect(sources[0]).toContain('正文')
+    expect(sources[1]).toBe('graph LR\nA --> B')
+    const chart = plan.charts[0]!
+    expect(chart.y + chart.height).toBeLessThanOrEqual(145)
+    expect(plan.texts.map((text) => text.lines.join(''))).toEqual(['残句行'])
   })
 
   it('上下紧贴的两张图不被并成一块：上一张只取自己的行', async () => {
@@ -257,8 +278,8 @@ describe('composeOverlayPlan · 图内节点文案翻译', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('节点文案翻译失败'))
   })
 
-  it('一张图只发起一次翻译调用：裁剪候选复用同一份对照表，不重译', async () => {
-    // 渲染站只认砍掉尾部正文后的源码：两个候选先后尝试，翻译却只该发生一次。
+  it('一张图只发起一次翻译调用：全区域被拒后由裁剪候选兜底，不重译', async () => {
+    // 渲染站只认不含正文的源码：全区域候选被拒后由裁剪候选（译文版）兜底，翻译仍只发生一次。
     const sources: string[] = []
     const render = async (source: string) => {
       sources.push(source)
@@ -277,9 +298,77 @@ describe('composeOverlayPlan · 图内节点文案翻译', () => {
     const plan = await composeOverlayPlan(blocks, REGION, { render, translateLabels })
 
     expect(requested).toHaveLength(1)
-    // 译文版的完整候选被渲染站拒了，最终落地的是裁剪候选的译文版。
-    expect(sources[0]).toContain('正文')
-    expect(sources).toContain('graph LR\nA[Process A] --> B[Process B]')
+    // 尝试序：候选1 译文版（正文拖挂被拒）→ 候选1 原文版（同样含正文，拒）→ 裁剪候选译文版（成功）。
+    expect(sources).toEqual([
+      'graph LR\nA[Process A] --> B[Process B]\n这一段紧跟图后的正文。',
+      'graph LR\nA[流程甲] --> B[流程乙]\n这一段紧跟图后的正文。',
+      'graph LR\nA[Process A] --> B[Process B]',
+    ])
+    expect(plan.charts).toHaveLength(1)
+  })
+
+  it('候选序列保守优先：全区域候选先试，合法非连线行（subgraph/participant）不被语句行过滤丢掉', async () => {
+    // subgraph、participant、Note 等不是语句行，但也不是垃圾行：过滤候选若排在前且渲染成功，
+    // 这些行的内容会从图里静默消失（裁剪后源码仍合法，渲染站裁决不出缺失）。
+    const { render, sources } = renderStub()
+    const blocks: OverlayBlock[] = [
+      { source: 'graph LR', translation: '图声明', box: { x: 200, y: 100, width: 80, height: 20 } },
+      { source: 'subgraph One', translation: '子图', box: { x: 200, y: 125, width: 140, height: 20 } },
+      { source: 'A --> B', translation: '甲到乙', box: { x: 200, y: 150, width: 140, height: 20 } },
+      { source: 'end', translation: '结束', box: { x: 200, y: 175, width: 140, height: 20 } },
+    ]
+
+    const plan = await composeOverlayPlan(blocks, REGION, { render })
+
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toBe('graph LR\nsubgraph One\nA --> B\nend')
+    expect(plan.charts).toHaveLength(1)
+  })
+
+  it('语句行过滤候选不含连线行时不产出：数字 id 劣化不再退化成裸声明空图', async () => {
+    // OCR 把行首节点 id 认成数字起头时语句行判据放不过它们，过滤候选若只剩声明行，
+    // 会渲染出一张空图盖住声明行。全区域候选先行成功，过滤候选根本不该存在。
+    const { render, sources } = renderStub()
+    const blocks: OverlayBlock[] = [
+      { source: 'graph LR', translation: '图声明', box: { x: 200, y: 100, width: 80, height: 20 } },
+      { source: '4 --> 5', translation: '甲到乙', box: { x: 200, y: 125, width: 140, height: 20 } },
+      { source: '6 --> 7', translation: '丙到丁', box: { x: 200, y: 150, width: 140, height: 20 } },
+    ]
+
+    const plan = await composeOverlayPlan(blocks, REGION, { render })
+
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toBe('graph LR\n4 --> 5\n6 --> 7')
+    expect(plan.charts).toHaveLength(1)
+  })
+
+  it('整段皆语句行时候选序列退回全区域→砍尾，对照表仍一次建立', async () => {
+    // 末行形如「id[标签]」（像语句、无箭头），语句行过滤产不出裁剪候选：首候选整段被渲染站拒后
+    // 由砍尾候选兜底。对照表取自首个（全区域）候选，两个候选共享同一次翻译调用。
+    const sources: string[] = []
+    const render = async (source: string) => {
+      sources.push(source)
+      if (source.includes('正文')) {
+        throw new Error('Lexical error on line 3')
+      }
+      return { svg: '<svg viewBox="0 0 100 50"></svg>', intrinsic: { width: 100, height: 50 } }
+    }
+    const { translateLabels, requested } = labelTranslator({ 流程甲: 'Process A', 流程乙: 'Process B' })
+    const blocks: OverlayBlock[] = [
+      { source: 'graph LR', translation: '图声明', box: { x: 200, y: 100, width: 80, height: 20 } },
+      { source: 'A[流程甲] --> B[流程乙]', translation: '原文行', box: { x: 200, y: 125, width: 200, height: 20 } },
+      { source: 'B1[图后紧跟的正文行]', translation: '残句行', box: { x: 200, y: 150, width: 200, height: 20 } },
+    ]
+
+    const plan = await composeOverlayPlan(blocks, REGION, { render, translateLabels })
+
+    expect(requested).toHaveLength(1)
+    // 尝试序：候选1 译文版（拒）→ 候选1 原文版（残句无译文映射仍含正文，拒）→ 候选2 译文版（成功）。
+    expect(sources).toEqual([
+      'graph LR\nA[Process A] --> B[Process B]\nB1[图后紧跟的正文行]',
+      'graph LR\nA[流程甲] --> B[流程乙]\nB1[图后紧跟的正文行]',
+      'graph LR\nA[Process A] --> B[Process B]',
+    ])
     expect(plan.charts).toHaveLength(1)
   })
 
