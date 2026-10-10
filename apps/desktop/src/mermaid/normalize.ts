@@ -186,6 +186,12 @@ export function normalizeMermaid(source: string): string {
       if (headChar === '》' || headChar === '〉' || headChar === '→') {
         out += '-->'
         index = head + 1
+        // OCR 对破折号笔画的误识常连带产出多余的裸 `>`（`-→>` 是 -、→、> 三段），flowchart
+        // 拒收 `-->>`（mermaid.parse 实测），故全角箭头归一后把紧邻的裸 > 一并吃掉。纯 ASCII
+        // 的 ->> / -->> 走上方分支不经这里，sequenceDiagram 语义完好。
+        while (source[index] === '>') {
+          index += 1
+        }
         continue
       }
 
@@ -198,7 +204,46 @@ export function normalizeMermaid(source: string): string {
     if (ch === '→' || ch === '》' || ch === '〉') {
       out += '-->'
       index += 1
+      // 与 dash 后全角箭头的分支同理：紧邻的裸 > 是同一轮误识的连带产物，一并吃掉。
+      while (source[index] === '>') {
+        index += 1
+      }
       continue
+    }
+
+    // <br/> 的 OCR 劣化族归一（S14）：`<` 被误识成 `s`（sbr/>）、`<` 整个丢失（br/>）、
+    // 尾尖括号变全角（<br/›）、尾巴整体被吃（<br 后跟空格/行尾/>）。换行标签只出现在节点
+    // 标签内，归一作用面已被检测收窄到候选块；<br 后跟字母区分不了 <break 与粘连劣化，
+    // 保守保留原样。匹配按前缀从长到短，sbr/> 先于 br/> 才不会留下悬空的 s。
+    if (source.startsWith('sbr/>', index)) {
+      out += '<br/>'
+      index += 5
+      continue
+    }
+    if (source.startsWith('br/>', index)) {
+      out += '<br/>'
+      index += 4
+      continue
+    }
+    if (ch === '<') {
+      if (source.startsWith('<br/>', index)) {
+        out += '<br/>'
+        index += 5
+        continue
+      }
+      if (source.startsWith('<br/', index) && (source[index + 4] === '›' || source[index + 4] === '〉' || source[index + 4] === '》')) {
+        out += '<br/>'
+        index += 5
+        continue
+      }
+      if (source.startsWith('<br', index)) {
+        const next = source[index + 3] ?? ''
+        if (next === '' || next === ' ' || next === '>' || next === ']' || next === ')' || next === '}') {
+          out += '<br/>'
+          index += 3
+          continue
+        }
+      }
     }
 
     const mapped = FULLWIDTH[ch]

@@ -128,3 +128,58 @@ describe('normalizeMermaid · 真样本与幂等', () => {
     expect(twice).toBe(once)
   })
 })
+
+describe('normalizeMermaid · 劣化箭头的裸 > 收窄（S14）', () => {
+  it('-→> 归一为 --> 且吃掉紧邻裸 >（flowchart 不接受 -->>）', () => {
+    expect(normalizeMermaid('WAV -→> A')).toBe('WAV --> A')
+    expect(normalizeMermaid('A —》 B')).toBe('A --> B')
+    expect(normalizeMermaid('A -〉> B')).toBe('A --> B')
+  })
+
+  it('纯 ASCII 的 ->> 与 -->> 完整保留（sequenceDiagram 语义不误伤）', () => {
+    expect(normalizeMermaid('Alice ->> Bob: hi')).toBe('Alice ->> Bob: hi')
+    expect(normalizeMermaid('Alice -->> Bob: hi')).toBe('Alice -->> Bob: hi')
+  })
+
+  it('全角箭头后紧跟多个裸 > 也只产出一条规范箭头', () => {
+    expect(normalizeMermaid('A -→>> B')).toBe('A --> B')
+  })
+
+  it('全角箭头后不是裸 > 的场景不受影响', () => {
+    expect(normalizeMermaid('A → B')).toBe('A --> B')
+    expect(normalizeMermaid('A →|标签| B')).toBe('A -->|标签| B')
+  })
+})
+
+describe('normalizeMermaid · <br/> 劣化形态归一（S14）', () => {
+  it('sbr/>、br/> 归一为 <br/>', () => {
+    expect(normalizeMermaid('A[beats_multisbr/>compare.py]')).toBe('A[beats_multi<br/>compare.py]')
+    expect(normalizeMermaid('A[beats_multi br/>compare.py]')).toBe('A[beats_multi <br/>compare.py]')
+    expect(normalizeMermaid('A[beats_multibr/>compare.py]')).toBe('A[beats_multi<br/>compare.py]')
+  })
+
+  it('完整 <br/> 不动，全角尾 <br/› 归一为 <br/>', () => {
+    expect(normalizeMermaid('A[beats<br/>times]')).toBe('A[beats<br/>times]')
+    expect(normalizeMermaid('A[beats<br/›times]')).toBe('A[beats<br/>times]')
+  })
+
+  it('缺尾的 <br 补全为 <br/>，非 br 的 < 开头序列不动', () => {
+    expect(normalizeMermaid('A[beats<br]')).toBe('A[beats<br/>]')
+    expect(normalizeMermaid('A[beats<br times]')).toBe('A[beats<br/> times]')
+    // <br 后跟字母区分不了 <break 与粘连劣化，保守保留原样。
+    expect(normalizeMermaid('A[较小 <box> 形态]')).toBe('A[较小 <box> 形态]')
+    expect(normalizeMermaid('A[<break 点>]')).toBe('A[<break 点>]')
+  })
+
+  it('真机缺陷样本归一后首行可解析、垃圾行劣化被修', () => {
+    const sample = [
+      'WAV[track_full.wav] -→> A[famta beats<br/>beat_times_full.json]',
+      'WAV --> B1［beat_this 神经拍追踪］',
+      'A—-2作为参照系分段+对照|C［三方拍表分歧 beats_multisbr/>compare_anchors.Py］',
+    ].join('\n')
+    const out = normalizeMermaid(sample)
+
+    expect(out.split('\n')[0]).toBe('WAV[track_full.wav] --> A[famta beats<br/>beat_times_full.json]')
+    expect(out.split('\n')[2]).toContain('<br/>compare_anchors.Py')
+  })
+})

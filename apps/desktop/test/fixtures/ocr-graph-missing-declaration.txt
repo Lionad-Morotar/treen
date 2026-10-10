@@ -1,0 +1,4 @@
+WAV[track_full.wav] -→> A[famta beats<br/>beat_times_full.json]
+WAV --> B1［beat_this 神经拍追踪］
+WAV --> B2［madmom DBN 拍/小节追踪］
+A—-2作为参照系分段+对照|C［三方拍表分歧 beats_multisbr/>compare_anchors.Py］
