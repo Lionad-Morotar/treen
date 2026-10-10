@@ -11,7 +11,7 @@ afterEach(() => {
 })
 
 describe('dev 路由门禁', () => {
-  it('非 dev 环境下三个端点一律 404，且不触碰任何外部调用', async () => {
+  it('非 dev 环境下各 dev 端点一律 404，且不触碰任何外部调用', async () => {
     setDevEnvironmentOverride(false)
 
     const outcomes = [

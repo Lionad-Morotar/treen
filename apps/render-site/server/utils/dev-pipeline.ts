@@ -17,7 +17,7 @@ import {
 import { DevRouteError, runDevRoute, type DevRouteOutcome } from './dev-gate'
 
 /**
- * `/api/dev/*` 三条端点的主体：OCR 取字、批量翻译、以及串起来的整链路装配。
+ * `/api/dev/*` 各端点的主体：OCR 取字、批量翻译、以及串起来的整链路装配。
  *
  * 所有能力都从 `@treen/shared` 取真实实现，这里只做三件端点独有的事：把上传的图像归一成
  * 生产 OCR 认得的形态、把图像尺寸换算成坐标语义、把链路里的 warn 级日志收成 diagnostics。
