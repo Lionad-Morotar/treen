@@ -10,3 +10,9 @@ contextBridge.exposeInMainWorld('treenSettings', {
   get: () => ipcRenderer.invoke('treen:settings-get'),
   set: (patch) => ipcRenderer.invoke('treen:settings-set', patch),
 })
+
+// 热键 capture 状态与授权入口：只读状态 + 一个跳转动作，不暴露任何写面。
+contextBridge.exposeInMainWorld('treenHotkeyCapture', {
+  status: () => ipcRenderer.invoke('treen:hotkey-capture-status'),
+  openSystemSettings: () => ipcRenderer.invoke('treen:hotkey-capture-open-settings'),
+})

@@ -22,6 +22,11 @@ describe('settings-preload.cjs', () => {
     expect(source).toContain(`'${IPC_CHANNELS.settingsSet}'`)
   })
 
+  it('用 contract 里定义的字面量调用热键 capture 通道', () => {
+    expect(source).toContain(`'${IPC_CHANNELS.hotkeyCaptureStatus}'`)
+    expect(source).toContain(`'${IPC_CHANNELS.hotkeyCaptureOpenSettings}'`)
+  })
+
   it('只经 contextBridge 暴露窄接口，不把 ipcRenderer 本体交给渲染层', () => {
     expect(source).toContain('contextBridge.exposeInMainWorld')
     // 渲染层拿到 ipcRenderer 就能自造任意通道，绕开主进程的校验面。

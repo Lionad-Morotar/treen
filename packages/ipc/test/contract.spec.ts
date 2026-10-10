@@ -18,6 +18,8 @@ describe('ipc contract', () => {
       'treen:capture-composite',
       'treen:settings-get',
       'treen:settings-set',
+      'treen:hotkey-capture-status',
+      'treen:hotkey-capture-open-settings',
     ])
   })
 

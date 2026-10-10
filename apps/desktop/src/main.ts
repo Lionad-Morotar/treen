@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { BrowserWindow, app, dialog, ipcMain } from 'electron'
+import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
 import { createLogger, readDeepSeekKey, type TreenSettings } from '@treen/shared'
 import {
   ShortcutManager,
@@ -15,6 +15,14 @@ import {
   listDisplays,
   pointOfInterest,
 } from './freeze/electron-adapters'
+import {
+  INPUT_MONITORING_SETTINGS_URL,
+  probeHotkeyCapturePermission,
+  registerHotkeyCaptureIpc,
+  spawnHotkeyCaptureChannel,
+  type HotkeyCaptureChannel,
+  type HotkeyCaptureStatus,
+} from './freeze/hotkey-capture'
 import { createCandidateBuilder } from './highlight/electron-candidates'
 import { createCompositeCopier, createSelectionCopier } from './selection'
 import { frameCropWriter, pngClipboardWriter } from './selection/electron-clipboard'
@@ -32,6 +40,22 @@ import { describeStartup } from './startup'
 const logger = createLogger('desktop')
 
 let freeze: FreezeController | null = null
+let hotkeyCapture: HotkeyCaptureChannel | null = null
+let hotkeyCaptureAuthorized = false
+let hotkeyCaptureReady = false
+
+/**
+ * 设置页读 capture 状态的现查口：助手可能运行中崩溃回落，不能注册时快照。
+ * probe 未完成时 ready=false，UI 保持「检查中」——窗口比装配先就绪，那次查询不算数。
+ */
+function hotkeyCaptureStatus(): HotkeyCaptureStatus {
+  const channel = hotkeyCapture?.status()
+  if (hotkeyCaptureReady && channel !== undefined) {
+    return { ...channel, ready: true }
+  }
+  // 通道没建起来：授权态以启动 probe 为准（true=已授权但助手缺失，false=未授权/不可达）。
+  return { ready: hotkeyCaptureReady, active: false, authorized: hotkeyCaptureAuthorized, reason: null }
+}
 
 /**
  * 让设置生效的钩子，由冻结域在就绪时装上。
@@ -160,8 +184,11 @@ function buildRegionLockAction(
 /**
  * 装配冻结域：真实 Electron 能力注入给纯逻辑控制器。
  * overlay.html 从 app 根取（`electron .` 下即包目录），不随构建产物走——它不进 main.js 的打包面。
+ *
+ * capture 助手的启动在控制器之前：通道就绪与否决定 ShortcutManager 走吞键还是监听，
+ * 未授权、二进制缺失、启动失败都静默落回 globalShortcut，行为与没有本模块时完全一致。
  */
-function setupFreeze(settings: SettingsStore): void {
+async function setupFreeze(settings: SettingsStore): Promise<void> {
   const copySelection = createSelectionCopier({
     readSources: readOverlaySources,
     writeCrop: frameCropWriter(logger),
@@ -185,11 +212,27 @@ function setupFreeze(settings: SettingsStore): void {
   })
 
   const triggerAccelerator = settings.read().freezeAccelerator
+  const helperPath = join(app.getAppPath(), 'bin', 'hotkey-capture')
+  const authorized = await probeHotkeyCapturePermission({ helperPath })
+  hotkeyCaptureAuthorized = authorized === true
+  hotkeyCaptureReady = true
+  if (authorized === true) {
+    // 键位表给空初值即可：控制器 register 时 ShortcutManager 会整表同步。
+    hotkeyCapture = await spawnHotkeyCaptureChannel({ helperPath, hotkeys: [], logger })
+    if (hotkeyCapture !== null) {
+      logger.info('热键 capture 已接管：注册的组合键不再派发给前台应用')
+    }
+  } else if (authorized === null) {
+    logger.warn('热键 capture 助手不可用（缺失或探测超时），快捷键走 globalShortcut 监听模式')
+  } else {
+    logger.warn('未授予「输入监控」权限，快捷键走 globalShortcut 监听模式；可在系统设置中授权后重启')
+  }
+
   const controller = createFreezeController({
     listDisplays,
     captureFrames,
     windows: createOverlayWindowFactory(join(app.getAppPath(), 'overlay.html'), logger),
-    shortcuts: new ShortcutManager(electronShortcutRegistrar()),
+    shortcuts: new ShortcutManager(electronShortcutRegistrar(), hotkeyCapture ?? undefined, logger),
     pointOfInterest,
     buildCandidates: createCandidateBuilder({ logger }),
     copySelection,
@@ -228,12 +271,33 @@ app.whenReady().then(() => {
   // 设置先于窗口与冻结就绪：设置页一打开就要经 IPC 读到它，冻结域也要从它取热键与开关。
   const settings = setupSettings()
   createMainWindow()
-  setupFreeze(settings)
+  registerHotkeyCaptureIpc({
+    ipc: ipcMain,
+    status: hotkeyCaptureStatus,
+    openSystemSettings: () => {
+      void shell.openExternal(INPUT_MONITORING_SETTINGS_URL)
+    },
+  })
+  // 装配链的任何同步抛错不能以未处理拒绝的形式带走主进程：报给用户，收掉半装配的
+  // 助手进程，设置窗口与设置读写保持可用。
+  setupFreeze(settings).catch((error: unknown) => {
+    const reason = error instanceof Error ? error.message : String(error)
+    logger.error(`冻结域装配失败：${reason}`)
+    hotkeyCapture?.dispose()
+    hotkeyCapture = null
+    void dialog.showMessageBox({
+      type: 'error',
+      message: 'Treen 冻结功能装配失败',
+      detail: `${reason}\n\n冻结与快捷键不可用，设置页仍可正常使用；重启应用可重试。`,
+    })
+  })
 })
 
 app.on('will-quit', () => {
   // 必须显式注销：残留的全局快捷键会一直占用系统组合键，且冻结覆盖层需随应用一起拆掉。
+  // capture 助手同样要收（unregisterAll 内会 dispose，这里兜 controller 未建或已先拆的路径）。
   freeze?.dispose()
+  hotkeyCapture?.dispose()
 })
 
 app.on('window-all-closed', () => {

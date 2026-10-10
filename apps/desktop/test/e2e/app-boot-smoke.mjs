@@ -19,6 +19,9 @@ const mainEntry = resolve(packageRoot, 'out', 'main.cjs')
 const require = createRequire(import.meta.url)
 
 const EXPECTED = ['Treen 启动', '冻结热键就绪']
+// capture 两态必有其一：授权机器「已接管」，未授权/助手缺失机器「监听模式」warn。
+// 两态都不允许缺席，否则 capture 静默失效（装配错误）时 smoke 仍绿，回归无人发现。
+const CAPTURE_MODES = ['热键 capture 已接管', '监听模式']
 const TIMEOUT_MS = 30_000
 
 function finish(ok, detail) {
@@ -50,7 +53,8 @@ function onChunk(chunk) {
       seen.add(needle)
     }
   }
-  if (EXPECTED.every((needle) => seen.has(needle))) {
+  const captureReady = CAPTURE_MODES.some((needle) => output.includes(needle))
+  if (captureReady && EXPECTED.every((needle) => seen.has(needle))) {
     clearTimeout(timer)
     child.kill('SIGKILL')
     finish(true, { seen: [...seen], output })
@@ -61,7 +65,8 @@ child.stdout.on('data', onChunk)
 child.stderr.on('data', onChunk)
 child.on('exit', (code, signal) => {
   clearTimeout(timer)
-  if (EXPECTED.every((needle) => seen.has(needle))) {
+  const captureReady = CAPTURE_MODES.some((needle) => output.includes(needle))
+  if (captureReady && EXPECTED.every((needle) => seen.has(needle))) {
     return
   }
   finish(false, { error: `进程提前退出（code=${code} signal=${signal}）`, output, seen: [...seen] })
