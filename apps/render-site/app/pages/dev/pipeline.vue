@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { MERMAID_THEME_VARIABLES } from '#shared/mermaid-theme'
 import { RENDER_SITE_ROUTES } from '@treen/ipc/routes'
 import {
   callOcr,
+  callPipeline,
   callSample,
   callSamples,
   callTranslate,
   dataUrlOf,
   type DevFailure,
+  type OcrBlockPayload,
+  type PipelinePlan,
   type SamplesResponse,
 } from '~/utils/dev-pipeline-client'
 import {
@@ -21,13 +24,15 @@ import {
   type EditableBlock,
   type TranslationPair,
 } from '~/utils/dev-pipeline-format'
+import { chartSourcesOf } from '~/utils/dev-pipeline-overlay'
 import type { RenderSiteHealth } from '~/utils/health'
 
 /**
- * `/dev/pipeline`：把「拿图 → OCR → 翻译」的前半条链摊开成可逐步重跑的调试台。
+ * `/dev/pipeline`：把「拿图 → OCR → 翻译 → 图表 → 覆盖层」这条链摊开成可逐步重跑的调试台。
  *
- * 每一步的中间态都摆在页面上（识别块可编辑、译文逐条并列、失败时整段保留服务端响应体），
- * 因为这条链的价值就在于定位「哪一步、为什么不对」——只给最终结果等于没有调试信息。
+ * 每一步的中间态都摆在页面上（识别块可编辑、译文逐条并列、图表两条渲染路径同屏、覆盖层压回
+ * 原图、失败时整段保留服务端响应体），因为这条链的价值就在于定位「哪一步、为什么不对」——
+ * 只给最终结果等于没有调试信息。
  *
  * 页面只在浏览器跑（`ssr: false`），故可直接使用 window / FileReader。
  */
@@ -61,7 +66,17 @@ const translateElapsed = ref<number | null>(null)
 const translateFailure = ref<DevFailure | null>(null)
 const translateRunning = ref(false)
 
+const plan = ref<PipelinePlan | null>(null)
+/** 装配那一次自己识别到的块：图表版位由它们求出，故源码还原也只认这一批 */
+const planBlocks = ref<OcrBlockPayload[]>([])
+const diagnostics = ref<string[]>([])
+const chartElapsed = ref<number | null>(null)
+const chartFailure = ref<DevFailure | null>(null)
+const chartRunning = ref(false)
+
 const dragging = ref(false)
+
+const chartSources = computed(() => chartSourcesOf(planBlocks.value, plan.value?.charts ?? []))
 
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
@@ -99,8 +114,8 @@ async function loadSamples() {
 /**
  * 作废全部下游结果。
  *
- * 识别块与译文都是针对某一张具体图而言的，图一变它们就同时失去所指；留着不只是误导，
- * 还会让「跑翻译」拿一张已不存在的图的文本去打计费端点。
+ * 识别块、译文与覆盖计划都是针对某一张具体图而言的，图一变它们就同时失去所指；留着不只是
+ * 误导，还会让「跑翻译」拿一张已不存在的图的文本去打计费端点。
  */
 function invalidateDownstream() {
   ocrBlocks.value = []
@@ -109,6 +124,16 @@ function invalidateDownstream() {
   pairs.value = []
   translateElapsed.value = null
   translateFailure.value = null
+  invalidatePlan()
+}
+
+/** 作废图表与覆盖层：版位是针对某一批识别块算出来的，块一改它们就整体失准。 */
+function invalidatePlan() {
+  plan.value = null
+  planBlocks.value = []
+  diagnostics.value = []
+  chartElapsed.value = null
+  chartFailure.value = null
 }
 
 function setImage(name: string, dataUrl: string) {
@@ -186,10 +211,11 @@ async function runOcr() {
     }
     ocrBlocks.value = toEditableBlocks(result.data.blocks)
     ocrElapsed.value = result.data.elapsedMs
-    // 输入变了，上一次的译文不再对应当前文本块。
+    // 输入变了，上一次的译文与版位都不再对应当前文本块。
     pairs.value = []
     translateElapsed.value = null
     translateFailure.value = null
+    invalidatePlan()
   } catch (cause) {
     ocrRunning.value = false
     ocrFailure.value = { ok: false, status: 0, raw: messageOf(cause), elapsedMs: 0 }
@@ -221,6 +247,36 @@ async function runTranslate() {
   } catch (cause) {
     translateRunning.value = false
     translateFailure.value = { ok: false, status: 0, raw: messageOf(cause), elapsedMs: 0 }
+  }
+}
+
+/**
+ * 跑整条装配链路，拿到图表与覆盖计划。
+ *
+ * 与翻译同理，只由按钮发起：这一条端点内部就含一次计费的翻译调用与一次渲染往返，页面里
+ * 任何自动触发（含失败重试）都会把外部调用的量变成不可控。
+ */
+async function runCharts() {
+  const current = image.value
+  if (current === null) {
+    return
+  }
+  chartRunning.value = true
+  chartFailure.value = null
+  try {
+    const result = await callPipeline(current.dataUrl)
+    chartRunning.value = false
+    chartElapsed.value = result.elapsedMs
+    if (!result.ok) {
+      chartFailure.value = result
+      return
+    }
+    plan.value = result.data.plan
+    planBlocks.value = result.data.blocks
+    diagnostics.value = result.data.diagnostics
+  } catch (cause) {
+    chartRunning.value = false
+    chartFailure.value = { ok: false, status: 0, raw: messageOf(cause), elapsedMs: 0 }
   }
 }
 
@@ -311,7 +367,7 @@ onUnmounted(() => {
 
     <p class="intro">
       这条页面跑的是渲染站自己的 dev 端点：图不出本机，但翻译会真的调用计费的外部 API，
-      每一次翻译都需要你按下按钮。
+      每一次翻译都需要你按下按钮；图表那一步跑的是整条链路，同样含一次真实翻译。
     </p>
 
     <!-- 取图：文件选择、拖拽、粘贴、样本库四个入口 -->
@@ -383,6 +439,50 @@ onUnmounted(() => {
         :pairs="pairs"
         :failure="translateFailure"
         :disabled="ocrBlocks.length === 0"
+      />
+    </DevPanel>
+
+    <!-- 步骤三：图表。服务端与浏览器两条渲染路径同屏并列，渲不出的原因由 diagnostics 说明 -->
+    <DevPanel
+      title="步骤三 · 图表"
+      test-id="dev-pipeline-chart"
+      :status="chartRunning ? 'running' : chartFailure !== null ? 'failed' : chartElapsed !== null ? 'done' : 'idle'"
+      :elapsed-ms="chartElapsed"
+      :summary="plan !== null ? `${plan.charts.length} 张` : ''"
+    >
+      <template #actions>
+        <button
+          class="run"
+          type="button"
+          data-testid="dev-pipeline-chart-run"
+          :disabled="chartRunning || image === null"
+          @click="runCharts"
+        >
+          {{ chartRunning ? '装配中…' : chartElapsed === null ? '跑图表' : '重跑图表' }}
+        </button>
+      </template>
+
+      <DevChartStep
+        :charts="plan?.charts ?? []"
+        :sources="chartSources"
+        :diagnostics="diagnostics"
+        :failure="chartFailure"
+        :disabled="image === null"
+      />
+    </DevPanel>
+
+    <!-- 步骤四：覆盖层。原图作底，译文与图表按像素版位压回原位 -->
+    <DevPanel
+      title="步骤四 · 覆盖层预览"
+      test-id="dev-pipeline-overlay"
+      :status="plan === null ? 'idle' : 'done'"
+      :summary="plan === null ? '' : `${plan.texts.length} 段译文 · ${plan.charts.length} 张图`"
+    >
+      <DevOverlayPreview
+        :image-data-url="image?.dataUrl ?? null"
+        :texts="plan?.texts ?? []"
+        :charts="plan?.charts ?? []"
+        :font-family="plan?.fontFamily ?? ''"
       />
     </DevPanel>
   </main>

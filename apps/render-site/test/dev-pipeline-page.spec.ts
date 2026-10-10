@@ -5,6 +5,7 @@ import { RENDER_SITE_DEV_ROUTES, RENDER_SITE_ROUTES } from '@treen/ipc/routes'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import DevPipelinePage from '../app/pages/dev/pipeline.vue'
 import type { EditableBlock, TranslationPair } from '../app/utils/dev-pipeline-format'
+import type { OverlayChartItem } from '../app/utils/dev-pipeline-overlay'
 
 /**
  * `/dev/pipeline` 页面的组件级行为测试。
@@ -62,6 +63,32 @@ const DevTranslateStep = defineComponent({
   },
 })
 
+const DevChartStep = defineComponent({
+  props: {
+    charts: { type: Array as PropType<OverlayChartItem[]>, default: () => [] },
+    diagnostics: { type: Array as PropType<string[]>, default: () => [] },
+  },
+  setup(props) {
+    return () => [
+      h('span', { 'data-testid': 'stub-chart-count' }, String(props.charts.length)),
+      h('span', { 'data-testid': 'stub-diagnostics-count' }, String(props.diagnostics.length)),
+    ]
+  },
+})
+
+const DevOverlayPreview = defineComponent({
+  props: {
+    texts: { type: Array as PropType<unknown[]>, default: () => [] },
+    charts: { type: Array as PropType<OverlayChartItem[]>, default: () => [] },
+  },
+  setup(props) {
+    return () => [
+      h('span', { 'data-testid': 'stub-overlay-text-count' }, String(props.texts.length)),
+      h('span', { 'data-testid': 'stub-overlay-chart-count' }, String(props.charts.length)),
+    ]
+  },
+})
+
 const BLOCK = {
   text: 'Hello',
   confidence: 0.9,
@@ -88,6 +115,20 @@ function payloadOf(url: string): unknown {
   }
   if (url === RENDER_SITE_DEV_ROUTES.translate) {
     return { translations: ['你好'], gated: [false] }
+  }
+  if (url === RENDER_SITE_DEV_ROUTES.pipeline) {
+    return {
+      blocks: [BLOCK],
+      translations: ['你好'],
+      plan: {
+        fontFamily: 'monospace',
+        lineHeightRatio: 1.25,
+        texts: [{ translation: '你好', x: 1, y: 2, width: 3, height: 4, fontSize: 8, lineHeight: 10, lines: ['你好'], clipped: false }],
+        charts: [{ svg: '<svg />', intrinsic: { width: 10, height: 10 }, x: 5, y: 6, width: 7, height: 8 }],
+      },
+      timings: { ocrMs: 1, translateMs: 2, chartMs: 3 },
+      diagnostics: [],
+    }
   }
   return {}
 }
@@ -154,7 +195,9 @@ afterEach(() => {
 function mountPage(): VueWrapper {
   return mount(DevPipelinePage, {
     attachTo: document.body,
-    global: { components: { DevPanel, DevImageSource, DevOcrStep, DevTranslateStep } },
+    global: {
+      components: { DevPanel, DevImageSource, DevOcrStep, DevTranslateStep, DevChartStep, DevOverlayPreview },
+    },
   })
 }
 
@@ -212,6 +255,21 @@ describe('dev/pipeline 的取图与下游结果', () => {
     expect(textOf(wrapper, 'stub-block-count')).toBe('0')
   })
 
+  it('重跑 OCR 后上一次的图表与覆盖层一并作废', async () => {
+    wrapper = mountPage()
+
+    paste(window, imageFile('a.png'))
+    await untilText(wrapper, 'stub-image', 'a.png')
+    await wrapper.get('[data-testid="dev-pipeline-chart-run"]').trigger('click')
+    await untilText(wrapper, 'stub-chart-count', '1')
+
+    await wrapper.get('[data-testid="dev-pipeline-ocr-run"]').trigger('click')
+    await untilText(wrapper, 'stub-block-count', '1')
+
+    expect(textOf(wrapper, 'stub-chart-count')).toBe('0')
+    expect(textOf(wrapper, 'stub-overlay-chart-count')).toBe('0')
+  })
+
   it('样本库 404 的空态指向 dev 门禁，不说端点只在 dev server 注册', async () => {
     vi.stubGlobal(
       'fetch',
@@ -229,5 +287,74 @@ describe('dev/pipeline 的取图与下游结果', () => {
     const hint = textOf(wrapper, 'stub-samples-hint')
     expect(hint).toContain('404')
     expect(hint).not.toContain('只在 dev server')
+  })
+})
+
+/**
+ * 图表这一步端点内部就含一次计费的翻译调用，故「谁触发的」比「结果对不对」更要紧：
+ * 自动触发与失败重试都会把外部调用的量变成不可控，这类回归只能挂在组件上测。
+ */
+describe('dev/pipeline 的图表步骤与外部调用', () => {
+  const pipelineCalls = (): number =>
+    calls.filter((call) => call.url === RENDER_SITE_DEV_ROUTES.pipeline).length
+
+  it('挂载后不自动装配：没有图也没人点按钮时一次都不打', async () => {
+    wrapper = mountPage()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(pipelineCalls()).toBe(0)
+  })
+
+  it('点了才跑，且一次点击只打一次', async () => {
+    wrapper = mountPage()
+    paste(window, imageFile('a.png'))
+    await untilText(wrapper, 'stub-image', 'a.png')
+
+    await wrapper.get('[data-testid="dev-pipeline-chart-run"]').trigger('click')
+    await untilText(wrapper, 'stub-chart-count', '1')
+
+    expect(pipelineCalls()).toBe(1)
+  })
+
+  it('装配失败就停在失败上，不自动重试', async () => {
+    vi.stubGlobal(
+      'fetch',
+      stubFetch((url) =>
+        url === RENDER_SITE_DEV_ROUTES.pipeline
+          ? new Response('{"error":"渲染站拒绝渲染"}', { status: 500 })
+          : payloadOf(url),
+      ),
+    )
+    wrapper = mountPage()
+    paste(window, imageFile('a.png'))
+    await untilText(wrapper, 'stub-image', 'a.png')
+
+    await wrapper.get('[data-testid="dev-pipeline-chart-run"]').trigger('click')
+    // 失败态没有可断言的计数变化，故直接等那一条调用落地再观察后续有没有再打。
+    await vi.waitFor(() => {
+      expect(pipelineCalls()).toBe(1)
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(pipelineCalls()).toBe(1)
+    expect(textOf(wrapper, 'stub-chart-count')).toBe('0')
+  })
+
+  it('清图后图表步骤回到禁用态，点不动也不再打端点', async () => {
+    wrapper = mountPage()
+    paste(window, imageFile('a.png'))
+    await untilText(wrapper, 'stub-image', 'a.png')
+
+    await wrapper.get('[data-testid="dev-pipeline-chart-run"]').trigger('click')
+    await untilText(wrapper, 'stub-chart-count', '1')
+
+    await wrapper.get('[data-testid="stub-clear"]').trigger('click')
+    expect(textOf(wrapper, 'stub-chart-count')).toBe('0')
+    expect(
+      wrapper.get('[data-testid="dev-pipeline-chart-run"]').attributes('disabled'),
+    ).toBeDefined()
+
+    await wrapper.get('[data-testid="dev-pipeline-chart-run"]').trigger('click')
+    expect(pipelineCalls()).toBe(1)
   })
 })

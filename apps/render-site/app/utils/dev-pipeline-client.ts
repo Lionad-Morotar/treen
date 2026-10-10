@@ -29,6 +29,46 @@ export interface TranslateResponse {
   gated: boolean[]
 }
 
+/** 覆盖计划里的一段译文：坐标已是图像像素，可直接绝对定位。 */
+export interface PipelineTextPayload {
+  translation: string
+  x: number
+  y: number
+  width: number
+  height: number
+  fontSize: number
+  lineHeight: number
+  /** 已按盒宽折好的行 */
+  lines: string[]
+  clipped: boolean
+}
+
+/** 覆盖计划里的一张图：坐标是 contain 适配后居中过的矩形，SVG 自身按 viewBox 缩放。 */
+export interface PipelineChartPayload {
+  svg: string
+  intrinsic: { width: number; height: number }
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface PipelinePlan {
+  fontFamily: string
+  lineHeightRatio: number
+  texts: PipelineTextPayload[]
+  charts: PipelineChartPayload[]
+}
+
+export interface PipelineResponse {
+  blocks: OcrBlockPayload[]
+  translations: string[]
+  plan: PipelinePlan
+  timings: { ocrMs: number; translateMs: number; chartMs: number }
+  /** 链路里的 warn 级日志：图为什么没出来的唯一线索 */
+  diagnostics: string[]
+}
+
 export interface SamplesResponse {
   /** 样本目录不存在时为 null */
   root: string | null
@@ -125,6 +165,24 @@ export function callTranslate(
   return requestJson<TranslateResponse>(
     RENDER_SITE_DEV_ROUTES.translate,
     { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ texts: [...texts] }) },
+    fetchImpl,
+  )
+}
+
+/**
+ * 跑整条链路：OCR、正文翻译与图表装配一次到位。
+ *
+ * 与 OCR/翻译两条端点不同，这一条会同时打计费的翻译 API 与本站的渲染端点，故调用方必须
+ * 由按钮发起——页面里任何自动触发都会把外部调用的量变成不可控。
+ */
+export function callPipeline(
+  image: string,
+  options: DevCallOptions = {},
+): Promise<DevCallResult<PipelineResponse>> {
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch
+  return requestJson<PipelineResponse>(
+    RENDER_SITE_DEV_ROUTES.pipeline,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ image }) },
     fetchImpl,
   )
 }
