@@ -12,7 +12,7 @@ const CHART_REGION = { x: 200, y: 100, width: 140, height: 45 }
  */
 function scene(): OverlayBlock[] {
   return [
-    { source: '标题', translation: '标题', box: { x: 0, y: 0, width: 60, height: 20 } },
+    { source: 'Title', translation: '标题', box: { x: 0, y: 0, width: 60, height: 20 } },
     { source: 'graph LR', translation: '图声明', box: { x: 200, y: 100, width: 80, height: 20 } },
     { source: 'A --> B', translation: '甲到乙', box: { x: 200, y: 125, width: 140, height: 20 } },
   ]
@@ -181,6 +181,35 @@ describe('composeOverlayPlan：译文与图的覆盖计划装配', () => {
     expect(sources).toHaveLength(1)
     expect(plan.charts).toHaveLength(1)
     expect(plan.texts).toHaveLength(0)
+  })
+
+  it('译文与原文相同的块不产译文盒，有真实译文的块照常上屏', async () => {
+    // 语言门控让中文条目以原文回填后，译文===原文的块若照常装配，OCR 出的同文会糊在原字上。
+    const blocks: OverlayBlock[] = [
+      { source: '标题', translation: '标题', box: { x: 0, y: 0, width: 60, height: 20 } },
+      { source: 'Title', translation: '标题译', box: { x: 0, y: 40, width: 60, height: 20 } },
+    ]
+
+    const plan = await composeOverlayPlan(blocks, REGION, {})
+
+    expect(plan.texts.map((text) => text.lines.join(''))).toEqual(['标题译'])
+  })
+
+  it('上屏门控不伤图表版位：中文屏上整屏译文被滤，图照常落位', async () => {
+    const { render } = renderStub()
+    const blocks: OverlayBlock[] = [
+      { source: '开始', translation: '开始', box: { x: 0, y: 0, width: 60, height: 20 } },
+      { source: 'graph LR', translation: 'graph LR', box: { x: 200, y: 100, width: 80, height: 20 } },
+      { source: 'A --> B', translation: 'A --> B', box: { x: 200, y: 125, width: 140, height: 20 } },
+    ]
+
+    const plan = await composeOverlayPlan(blocks, REGION, { render })
+
+    expect(plan.texts).toHaveLength(0)
+    expect(plan.charts).toHaveLength(1)
+    const chart = plan.charts[0]!
+    expect(chart.x).toBeGreaterThanOrEqual(CHART_REGION.x)
+    expect(chart.y).toBeGreaterThanOrEqual(CHART_REGION.y)
   })
 })
 

@@ -218,8 +218,14 @@ export async function composeOverlayPlan(
 
   // 关闭文本翻译时 blocks 的 translation 是空串（翻译步骤被跳过以省一次外部调用）；
   // 那种空盒不该落到覆盖层上，故整批不产出译文——图表已独立成层，不受影响。
+  //
+  // 上屏门控：译文与原文相同的块不产译文盒。语言门控让中文条目以原文回填后，这些块若照常装配，
+  // 屏幕上会被盖一层 OCR 识别出的同文——原字本来是对的，OCR 的错字（如「崩」认成「跚」）反而
+  // 糊在干净的原字上。图表是独立层，中文屏上图照常渲染，不受此门控影响。
   const texts: OverlayTextInput[] = includeTexts
-    ? blocks.map((block) => ({ translation: block.translation, box: block.box }))
+    ? blocks
+        .filter((block) => block.translation !== block.source)
+        .map((block) => ({ translation: block.translation, box: block.box }))
     : []
   return planOverlay({ texts, charts })
 }
