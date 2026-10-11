@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createTranslateSelection } from '../src/translation/link'
-import type { OcrEngine } from '../src/translation/ocr'
+import type { OcrEngine } from '../src/translation'
 import type { DisplayLike, Rect } from '../src/freeze/geometry'
 import type { FreezeFrame, SelectionSource } from '../src/freeze/controller'
 

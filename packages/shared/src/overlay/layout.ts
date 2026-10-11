@@ -1,6 +1,5 @@
-import { MONOSPACE_FONT_FAMILY, advanceEm } from '@treen/shared/text-metrics'
-import { intersectRects } from '../highlight/candidates'
-import type { Rect } from '../freeze/geometry'
+import { MONOSPACE_FONT_FAMILY, advanceEm } from '../text-metrics'
+import { intersectRects, type Rect } from '../geometry'
 
 /**
  * 覆盖层布局引擎（纯逻辑）：把「一段译文」「一张图」换算成绝对定位的渲染盒。
@@ -46,6 +45,13 @@ export interface ChartPlacement {
   height: number
   /** 渲染站直出的 SVG 串；尺寸由 width/height 承载，SVG 自身按 viewBox 缩放 */
   svg: string
+  /**
+   * 渲染成功的那份 mermaid 源码；装配层回填。
+   *
+   * 带出来是为了让「重渲一遍」比的是同一份源码：消费方若按自己的观察行还原，取到的可能是相邻行
+   * 或被候选裁剪掉的行，于是「你渲得出、我渲不出」这类差异由还原方式制造，而不是渲染差异。
+   */
+  source?: string
 }
 
 export interface Size {
@@ -196,6 +202,8 @@ export interface OverlayChartInput {
   svg: string
   intrinsic: Size
   box: Rect
+  /** 同 ChartPlacement.source：渲染成功时由装配层回填 */
+  source?: string
 }
 
 /** 渲染层一次性消费的覆盖计划。 */
@@ -220,7 +228,7 @@ export function planOverlay(input: {
   for (const chart of input.charts) {
     const fitted = fitChartIntoBox(chart.intrinsic, chart.box)
     if (fitted !== null) {
-      charts.push({ ...fitted, svg: chart.svg })
+      charts.push({ ...fitted, svg: chart.svg, source: chart.source })
     }
   }
 

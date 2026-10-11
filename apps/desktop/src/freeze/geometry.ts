@@ -6,12 +6,11 @@
  * 适配层出现，几何本身不引入运行时依赖。
  */
 
-export interface Rect {
-  x: number
-  y: number
-  width: number
-  height: number
-}
+// 矩形取共享层那一份再导出：桌面帧与渲染站服务端消费同一个结构，壳层自持同形声明时
+// 结构兼容会让 tsc 全程沉默，日后补字段只改一处就分叉成两种理解。
+import type { Rect } from '@treen/shared/geometry'
+
+export type { Rect }
 
 export interface Point {
   x: number

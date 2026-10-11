@@ -1,13 +1,18 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { detectMermaidBlocks } from '../src/mermaid/detect'
-import { createMermaidValidator, extractMermaidBlocks, normalizeMermaid } from '../src/mermaid'
-import { chartSourceCandidates } from '../src/overlay/compose'
-import { SCREENSHOT_OCR_ROI, SCREENSHOT_SOURCE } from './mermaid-fixtures'
-
-/** S14 真机缺陷样本：OCR 完全没认出声明行的 flowchart（含垃圾行与各类箭头劣化）。 */
-const BUG_OCR_SAMPLE = readFileSync(join(import.meta.dirname, 'fixtures/ocr-graph-missing-declaration.txt'), 'utf8')
+import {
+  createMermaidValidator,
+  detectMermaidBlocks,
+  extractMermaidBlocks,
+  normalizeMermaid,
+} from '../src/mermaid'
+import { chartSourceCandidates } from '../src/overlay'
+// 夹具留在共享层这个唯一真源：真机样本被两边的 spec 共用，复制成两份就会各自漂移，
+// 读文件也只发生在夹具模块里，消费方不各自拼路径。
+import {
+  BUG_OCR_SAMPLE,
+  SCREENSHOT_OCR_ROI,
+  SCREENSHOT_SOURCE,
+} from '../../../packages/shared/test/mermaid-fixtures'
 
 /**
  * mermaid.parse 的真链路：真实 mermaid（12.x）+ jsdom 垫片在纯 Node 下跑通语法校验。

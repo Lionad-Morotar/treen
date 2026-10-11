@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./routes": {
+      "types": "./src/routes.ts",
+      "default": "./src/routes.ts"
     }
   },
   "scripts": {

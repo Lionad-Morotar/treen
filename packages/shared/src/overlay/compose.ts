@@ -1,10 +1,10 @@
 import { detectMermaidBlocks, hasStructuralLine, isDiagramDeclaration, looksLikeStatementLine } from '../mermaid/detect'
 import { collectNodeLabels, mapNodeLabels } from '../mermaid/labels'
 import { normalizeMermaid } from '../mermaid/normalize'
-import type { MermaidRenderResult } from '../render-site/client'
+import type { MermaidRenderResult } from '../render'
 import { chartRegionMembers, rectOfMembers, type PlacedObservation } from './chart-region'
 import { planOverlay, type OverlayChartInput, type OverlayPlan, type OverlayTextInput } from './layout'
-import type { Rect } from '../freeze/geometry'
+import type { Rect } from '../geometry'
 
 /**
  * 覆盖计划的装配：把翻译链路的产物（带屏幕落点的译文块）拼成渲染层能直接消费的计划。
@@ -12,7 +12,8 @@ import type { Rect } from '../freeze/geometry'
  * 这里是图表落点的关键决策点，串起三件事：
  * 1. 用 OCR 观察的文字还原源码文本，做 mermaid 候选检测（声明行丢失的段靠语句行判据兜住）；
  * 2. 对每个候选，以「声明或段首所在观察」为锚点，用几何连续性求出它占住的那几行，并得到矩形；
- * 3. 把那几行归一化后（无声明候选补默认声明）送渲染站拿 SVG，按 contain 适配进那个矩形。
+ * 3. 把那几行归一化后（无声明候选补默认声明），经 LLM 修复恰一次（注入时；每张图的主送源），
+ *    连同降级为安全网的规则候选一起逐个送渲染站拿 SVG，按 contain 适配进那个矩形。
  *
  * 源码取「屏幕上占住的那几行」而非检测出的整块，是这里最容易看错的一点：检测以空行划界，而截图里
  * 的图后面往往紧跟正文，整块喂给渲染站只会换回一句语法错，图就静默消失了。屏幕矩形已由几何求出，
@@ -47,6 +48,13 @@ export interface ComposeOverlayDeps {
    * 源码里没有节点标签时也不会被调用，省下那次外部调用。
    */
   translateLabels?(labels: readonly string[]): Promise<string[]>
+  /**
+   * 用 LLM 修复一段 mermaid 源码（语义级畸变归一化救不了，猜测交给模型、合法性由渲染站裁决）；
+   * 不可用时抛错。链路上的必经步骤：图表装配每检测出一张图都会以它的首个规则候选（全区域归一版）
+   * 调用恰一次，修复版作为主送源排在尝试序列最前；抛错或产物与输入等同时落回规则候选序列。
+   * 缺省（未配密钥等）时行为与无修复链路完全一致。
+   */
+  refine?(source: string): Promise<string>
   /** 是否产出译文覆盖；缺省 true。关闭时仍照常检测图表（图不需要译文，只需源码文本）。 */
   texts?: boolean
   logger?: { warn(message: string): void; info(message: string): void }
@@ -125,22 +133,21 @@ export function chartSourceCandidates(lines: readonly string[]): Array<{ source:
 
 /**
  * 一张图的「标签 → 译文」对照表；翻译不适用（未注入、无标签、调用失败）时为 null，
- * 候选照常用原文。标签集合取首个候选（全区域行）——后续候选是它的裁剪子集，
- * 一张图只需一次外部调用，裁剪候选不必重译。
+ * 候选照常用原文。标签集合取自**主送源码**（修复在场即修复版，否则全区域候选）——
+ * 一张图只需一次外部调用，其余候选复用这张表。
  */
 async function chartLabelLookup(
-  sources: readonly string[],
+  primarySource: string | undefined,
   translateLabels: ((labels: readonly string[]) => Promise<string[]>) | undefined,
   logger?: { warn(message: string): void; info(message: string): void },
 ): Promise<Map<string, string | null> | null> {
-  if (translateLabels === undefined || sources.length === 0) {
+  if (translateLabels === undefined || primarySource === undefined) {
     return null
   }
   try {
-    // 候选按「语句行过滤 → 全区域」排列，取首个建对照表（S14 起首个不再恒为后续候选的超集）：
-    // 被过滤掉的垃圾行里的括号文本不进集合，省下白付的 token；某候选若含对照表外的标签，
-    // mapNodeLabels 对缺失标签保留原文，图不受影响。
-    const labels = collectNodeLabels(sources[0] ?? '')
+    // 主送源是修复版时，被修复删掉的垃圾行里的括号文本不进集合，省下白付的 token；
+    // 兜底候选若含对照表外的标签，mapNodeLabels 对缺失标签保留原文，图不受影响。
+    const labels = collectNodeLabels(primarySource)
     // 一条节点标签都没有（纯连线图）：那次外部调用也省下。
     if (labels.length === 0) {
       return null
@@ -160,6 +167,33 @@ async function chartLabelLookup(
 }
 
 /**
+ * 对这张图的全区域规则归一版做恰一次 LLM 修复；返回可用修复版，或 null（未注入、调用抛错、
+ * 产物与输入逐字节相同）。
+ *
+ * 抛错在这里就被吞掉并落回 null：降级是「图链退回规则候选序列」，本就是修复步骤的失败形态，
+ * 装配层不需要第二个处理点。产物与输入相同即模型认为无需修，再当独立尝试送渲染是复走规则
+ * 序列首选的重复往返。
+ */
+async function refineChartSource(
+  refine: ((source: string) => Promise<string>) | undefined,
+  first: { source: string } | undefined,
+  logger?: { warn(message: string): void; info(message: string): void },
+): Promise<string | null> {
+  if (refine === undefined || first === undefined) {
+    return null
+  }
+  try {
+    const refined = await refine(first.source)
+    return refined === first.source ? null : refined
+  } catch (error) {
+    logger?.warn(
+      `LLM 修复失败，落回规则候选：${error instanceof Error ? error.message : String(error)}`,
+    )
+    return null
+  }
+}
+
+/**
  * 把选区里的 mermaid 候选逐个变成图表版位。渲染方由调用方给定——它缺席时整个函数不会被调用。
  * 每个候选的取舍（几何求区域、区域裁剪源码、渲染站裁决、候选序列）见文件头的说明。
  */
@@ -168,9 +202,9 @@ async function composeCharts(
   sourceText: string,
   region: Rect,
   render: (source: string) => Promise<MermaidRenderResult>,
-  translateLabels: ((labels: readonly string[]) => Promise<string[]>) | undefined,
-  logger?: { warn(message: string): void; info(message: string): void },
+  deps: Pick<ComposeOverlayDeps, 'translateLabels' | 'refine' | 'logger'>,
 ): Promise<OverlayChartInput[]> {
+  const { translateLabels, refine, logger } = deps
   const charts: OverlayChartInput[] = []
   for (const candidate of detectMermaidBlocks(sourceText)) {
     const members = chartRegionMembers(observations, candidate.startLine, {
@@ -193,30 +227,50 @@ async function composeCharts(
       continue
     }
 
-    // 尝试序列：每个候选先试「节点文案已翻译」的版本，渲染站拒了再退回原文版本——
-    // 翻译模型返回的内容可能让源码不合法（括号、引号），图不能因译文而消失。
-    // 全部候选共享一次翻译调用（对照表按候选序列首个 source 建立）。
+    // 尝试序列：LLM 修复版（译标签 → 原文）排在最前，其后才是每个规则候选的「译标签 → 原文」——
+    // 每个版本被渲染站拒了都还有下一层退路，图不能因修复或译文而消失。
+    // 全部候选共享一次翻译调用（对照表按主送源建立）。
     const candidateSources = chartSourceCandidates(lines)
-    const lookup = await chartLabelLookup(candidateSources.map((attempt) => attempt.source), translateLabels, logger)
-    const attempts: Array<{ source: string; memberIndices: number[] }> = []
-    for (const attempt of candidateSources) {
+    // 链上必经一步：对这张图的全区域规则归一版做恰一次 LLM 修复；不可用只落回规则候选。
+    const refined = await refineChartSource(refine, candidateSources[0], logger)
+    // 标签对照表改建在主送源上（修复在场即修复版）：规则兜底候选复用同一份表——
+    // 其标签若不在表内，mapNodeLabels 保留原文，不坏于现状。
+    const lookup = await chartLabelLookup(refined ?? candidateSources[0]?.source, translateLabels, logger)
+    const attempts: Array<{ source: string; memberIndices: number[]; refined: boolean }> = []
+    const pushAttempts = (source: string, memberIndices: number[], isRefined: boolean): void => {
       if (lookup !== null) {
-        const mapped = mapNodeLabels(attempt.source, (label) => lookup.get(label) ?? null).output
+        const mapped = mapNodeLabels(source, (label) => lookup.get(label) ?? null).output
         // 译文版与原文版逐字节相同时不重复送渲染：中文标签经语言门控原文回填后，两条尝试本是
         // 同一份源码，渲染站拒第一条时第二条注定同样失败，白付一次往返还把失败日志搅混。
-        if (mapped !== attempt.source) {
-          attempts.push({ source: mapped, memberIndices: attempt.memberIndices })
+        if (mapped !== source) {
+          attempts.push({ source: mapped, memberIndices, refined: isRefined })
         }
       }
-      attempts.push(attempt)
+      attempts.push({ source, memberIndices, refined: isRefined })
+    }
+    if (refined !== null) {
+      // 修复版命中时版位仍按全区域成员算，是刻意接受的折衷：LLM 输出与观察行没有逐行对应
+      // （它可删行可改行），无法像裁剪候选那样带回 memberIndices 精算版位。代价是修复删掉
+      // 尾部混入的正文行时，图盒会虚高且那些行的译文被版位抑制；收益基准是「没有修复这一步，
+      // 这张图本来就渲染失败、整张消失」——救回场景下位置略偏优先于图不存在。
+      pushAttempts(refined, candidateSources[0]?.memberIndices ?? [], true)
+    }
+    for (const attempt of candidateSources) {
+      pushAttempts(attempt.source, attempt.memberIndices, false)
     }
 
     let rendered: MermaidRenderResult | null = null
+    // 记下成功那份的源码：节点标签翻译成功时它是译文版源码，与「区域内全部行」不是同一份，
+    // 不带出来就得由消费方按自己的行还原，两边比的不是同一份源码。
+    let renderedSource: string | undefined
+    let renderedByRefine = false
     let failure: unknown = null
     let covered = members
     for (const attempt of attempts) {
       try {
         rendered = await render(attempt.source)
+        renderedSource = attempt.source
+        renderedByRefine = attempt.refined
         // memberIndices 是 lines 内的下标，按 members 映射回观察下标才是实际覆盖的成员。
         covered = attempt.memberIndices
           .map((index) => members[index])
@@ -232,6 +286,8 @@ async function composeCharts(
       )
       continue
     }
+    // 「规则命中还是 LLM 救回」是可观察性要求：没有这条留痕，修复步骤的效果好坏在诊断里不可分辨。
+    logger?.info(`mermaid 图渲染成功：命中来源为${renderedByRefine ? ' LLM 修复版' : '规则候选'}`)
     if (covered.length < members.length) {
       // 裁剪成功说明几何区域把非图内容也框了进来（多半是图后紧跟的正文，空行又被 OCR 丢了）。
       // 这不影响这次覆盖，但它是 OCR 分块的系统性信号，值得留痕而不是悄悄吞掉。
@@ -245,7 +301,7 @@ async function composeCharts(
     if (box === null) {
       continue
     }
-    charts.push({ svg: rendered.svg, intrinsic: rendered.intrinsic, box })
+    charts.push({ svg: rendered.svg, intrinsic: rendered.intrinsic, box, source: renderedSource })
   }
   return charts
 }
@@ -269,7 +325,7 @@ export async function composeOverlayPlan(
   const charts =
     render === undefined
       ? []
-      : await composeCharts(observations, sourceText, region, render, deps.translateLabels, deps.logger)
+      : await composeCharts(observations, sourceText, region, render, deps)
 
   // 关闭文本翻译时 blocks 的 translation 是空串（翻译步骤被跳过以省一次外部调用）；
   // 那种空盒不该落到覆盖层上，故整批不产出译文——图表已独立成层，不受影响。

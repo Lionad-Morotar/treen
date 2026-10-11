@@ -1,5 +1,4 @@
-import type { Rect } from '../freeze/geometry'
-import type { OcrEngine } from './ocr'
+import type { OcrEngine, Rect } from './ocr'
 
 /**
  * mac-ocr 的真实绑定：把归一化 ROI 交给 Apple Vision 取字。

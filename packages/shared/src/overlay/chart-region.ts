@@ -1,4 +1,4 @@
-import type { Rect } from '../freeze/geometry'
+import type { Rect } from '../geometry'
 
 /**
  * 用几何连续性求一块 mermaid 图在屏幕上的矩形。

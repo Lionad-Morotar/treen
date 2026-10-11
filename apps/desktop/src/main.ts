@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
-import { createLogger, readDeepSeekKey, type TreenSettings } from '@treen/shared'
+import { createLogger, createMermaidRefiner, readDeepSeekKey, type TreenSettings } from '@treen/shared'
 import {
   ShortcutManager,
   createFreezeController,
@@ -157,6 +157,8 @@ function buildRegionLockAction(
   }
   const translate = createBatchTranslator({ complete: createDeepSeekCompleter(), logger })
   const render = createRenderSiteClient()
+  // LLM 修复与正文翻译共用同一条 DeepSeek 出口；这里的急切构造安全的前提是函数开头已挡下缺密钥。
+  const refine = createMermaidRefiner({ complete: createDeepSeekCompleter() })
 
   return createRegionLockAction({
     readSettings: () => settings.read(),
@@ -171,6 +173,9 @@ function buildRegionLockAction(
       composeOverlayPlan(blocks, region, {
         // 图表开关关闭时不注入渲染方：整段 mermaid 检测与渲染都不发生，而不是渲染完再丢弃。
         render: options.charts ? render : undefined,
+        // LLM 修复是装配的必经主送，随图表开关联动：图不渲染时修复没有落点。
+        // 不受节点文案子开关约束——修复的是图语法本身，与标签译不译无关。
+        refine: options.charts ? refine : undefined,
         // 节点文案是图表的子开关：图不渲染时翻译没有落点，一并豁免那次外部调用。
         translateLabels: options.charts && options.nodeLabels ? translate : undefined,
         texts: options.texts,

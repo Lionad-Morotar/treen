@@ -1,10 +1,10 @@
-import { requireDeepSeekKey } from '@treen/shared'
+import { requireDeepSeekKey } from '../env'
 import type { TranslateCompleter } from './deepseek'
 
 /**
  * DeepSeek Chat Completions 的真实出口：把请求体 POST 过去，取回 assistant 的文本内容。
  *
- * 密钥经 @treen/shared 的配置层读取（进程环境变量优先、其次 .env.local），缺失即抛可操作的错误。
+ * 密钥经本包 env 模块读取（进程环境变量优先、其次 .env.local），缺失即抛可操作的错误。
  * 超时用 AbortSignal 兜住悬挂连接：翻译在交互链路里，一次卡死会把整条链路的响应预算吃光。
  */
 
@@ -12,7 +12,7 @@ const DEFAULT_ENDPOINT = 'https://api.deepseek.com'
 const DEFAULT_TIMEOUT_MS = 30_000
 
 export interface DeepSeekCompleterOptions {
-  /** 显式密钥；缺省经 @treen/shared 读取 */
+  /** 显式密钥；缺省经 env 模块读取 */
   apiKey?: string
   /** API 基址；缺省官方端点（测试可指向替身） */
   endpoint?: string

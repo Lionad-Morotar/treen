@@ -1,9 +1,25 @@
 import { fileURLToPath } from 'node:url'
-import { RENDER_SITE_HOST, RENDER_SITE_PORT, RENDER_SITE_ROUTES } from '@treen/ipc'
+import { tryUseNuxt } from 'nuxt/kit'
+import { RENDER_SITE_DEV_ROUTES, RENDER_SITE_HOST, RENDER_SITE_PORT, RENDER_SITE_ROUTES } from '@treen/ipc'
+import { withoutDevPages } from './app/utils/dev-pages'
 
 // 处理器绝对路径：Nitro 会用别名替换后按 srcDir 解析 handler 路径，传绝对路径可绕开
 // srcDir/别名随版本漂移的歧义（见 nitropack 的 resolveNitroPath）。
 const handlerDir = fileURLToPath(new URL('./server/handlers/', import.meta.url))
+
+/**
+ * 摘路由的 dev 判定：优先取 Nuxt 实例自己的 `options.dev`。
+ *
+ * `nuxi build` 只在 NODE_ENV 未设置时才置 production，开发者 shell 或 CI 显式导出
+ * NODE_ENV=development / staging 再跑 build，纯环境判定就会失真、把调试页连同它对 dev 端点的
+ * 调用一起放进生产产物；而 `nuxt.options.dev` 由 CLI 按命令定死，与环境无关。
+ * `pages:extend` 的回调不接 nuxt 实例，但 Nuxt 的 callHook 包在 runWithNuxtContext 里，
+ * 故这里能用 tryUseNuxt 取到；取不到（配置被别处直接 loadNuxtConfig 求值）退回 NODE_ENV。
+ * 构建期判定无论怎么取都可能失真，故页面侧还有 import.meta.dev 的运行时第二道防线。
+ */
+function isDevBuild(): boolean {
+  return tryUseNuxt()?.options.dev ?? process.env.NODE_ENV !== 'production'
+}
 
 export default defineNuxtConfig({
   compatibilityDate: '2026-10-01',
@@ -15,12 +31,52 @@ export default defineNuxtConfig({
   ssr: false,
   // 只绑回环，端口取自 @treen/ipc 的共享常量，避免壳层与渲染站各写一份字面量。
   devServer: { host: RENDER_SITE_HOST, port: RENDER_SITE_PORT },
+  hooks: {
+    /**
+     * 非 dev 时把 `/dev` 下的页面从路由表里摘掉。
+     *
+     * 摘路由而非运行时重定向：调试页会把本机 OCR 结果与译文原样摊开，只挡访问的话页面代码
+     * 与它对 dev 端点的调用照样进产物。摘掉路由后打包器也一并摇掉这页独有的代码。
+     * 判定抽在 `app/utils/dev-pages`：dev 与非 dev 两条分支在源码里是同一段，留在闭包里就
+     * 只剩「实跑一次生产构建」这一条验证路径。
+     */
+    'pages:extend'(pages) {
+      const kept = withoutDevPages(pages, isDevBuild())
+      pages.splice(0, pages.length, ...kept)
+    },
+  },
   nitro: {
     // 路由路径直接由 RENDER_SITE_ROUTES 派生，而非靠 server/api 的文件名恰好同形，
     // 使契约常量成为唯一事实源，两侧不会因改名而漂移。
     handlers: [
       { route: RENDER_SITE_ROUTES.render, handler: `${handlerDir}render.ts`, method: 'post' },
       { route: RENDER_SITE_ROUTES.health, handler: `${handlerDir}health.ts`, method: 'get' },
+      // dev 调试端点同样由常量派生；它们能传图并调计费的外部 API，非 dev 环境一律 404
+      // （第二道防线在 server/utils/dev-gate.ts）。
+      { route: RENDER_SITE_DEV_ROUTES.ocr, handler: `${handlerDir}dev/ocr.ts`, method: 'post' },
+      {
+        route: RENDER_SITE_DEV_ROUTES.translate,
+        handler: `${handlerDir}dev/translate.ts`,
+        method: 'post',
+      },
+      {
+        route: RENDER_SITE_DEV_ROUTES.pipeline,
+        handler: `${handlerDir}dev/pipeline.ts`,
+        method: 'post',
+      },
+      // 样本库同样是 dev-only：它把仓库 zRefs 里的图整份交出，生产产物不该有这条出口。
+      { route: RENDER_SITE_DEV_ROUTES.samples, handler: `${handlerDir}dev/samples.ts`, method: 'get' },
+      {
+        route: RENDER_SITE_DEV_ROUTES.sample,
+        handler: `${handlerDir}dev/sample.ts`,
+        method: 'get',
+      },
     ],
+    externals: {
+      // mac-ocr 随包分发一个 Swift 二进制，靠 `import.meta.url` 解析 `../bin/mac-ocr`
+      // （见 mac-ocr/dist/index.mjs）。一旦被打进 server bundle，import.meta.url 就变成产物自身的
+      // URL，二进制路径算错、OCR 必然失败；钉成外部依赖才能让它在运行时按包所在位置解析。
+      external: ['mac-ocr'],
+    },
   },
 })

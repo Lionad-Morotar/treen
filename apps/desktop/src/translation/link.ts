@@ -1,5 +1,5 @@
 import { pickCopyTarget, pickTargetForDisplay } from '../selection'
-import { createOcrReader, type OcrBlock, type OcrEngine } from './ocr'
+import { createOcrReader, type OcrBlock, type OcrEngine } from '@treen/shared/translation'
 import type { FreezeLogger, SelectionSource } from '../freeze/controller'
 import type { Point, Rect } from '../freeze/geometry'
 

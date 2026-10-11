@@ -12,7 +12,7 @@ import type {
 import type { ShortcutRegistrar } from './shortcuts'
 import { freezeWindowOptions } from './window-options'
 import type { Candidate } from '../highlight/candidates'
-import type { OverlayPlan } from '../overlay/layout'
+import type { OverlayPlan } from '../overlay'
 
 /**
  * Electron 运行时绑定层：把纯逻辑控制器需要的四类能力（取屏、截屏、建窗、快捷键）

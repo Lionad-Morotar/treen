@@ -1,5 +1,8 @@
 import { readDeepSeekKey, redactSecret } from '@treen/shared'
 
+// 路由常量另立无依赖模块（浏览器侧也消费），此处原样转出以保持既有导入路径可用。
+export * from './routes'
+
 /**
  * Electron 进程间的稳定通道名，集中定义以防字符串漂移。
  *
@@ -21,24 +24,6 @@ export const IPC_CHANNELS = {
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]
-
-/** 常驻渲染站的 HTTP 端点：mermaid 源码进、SVG 出。路径集中定义，两侧共此一份。 */
-export const RENDER_SITE_ROUTES = {
-  /** POST { source } → { svg, width, height } 或 { error }；源码不合法时不渲染，报错带原因 */
-  render: '/api/render',
-  /** GET → { ok: true, service, version }，用于壳层确认渲染站已就绪 */
-  health: '/api/health',
-} as const
-
-/**
- * 渲染站监听的地址与端口。只绑回环：服务仅供电桌壳层调用，暴露到 LAN 会把本机变成公开渲染端点。
- * 端口固定是为了让壳层能写死基准 URL 而无需运行时发现。
- */
-export const RENDER_SITE_HOST = '127.0.0.1'
-export const RENDER_SITE_PORT = 5433
-
-/** 渲染站基准 URL：壳层据此拼出 `RENDER_SITE_ROUTES` 里的端点，服务端据此绑定监听地址。 */
-export const RENDER_SITE_ORIGIN = `http://${RENDER_SITE_HOST}:${RENDER_SITE_PORT}`
 
 export interface SharedConfigProbe {
   configured: boolean

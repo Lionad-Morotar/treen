@@ -51,6 +51,16 @@ function strictRender() {
   return { render, sources }
 }
 
+/** 节点文案翻译替身：记录每次请求的标签，按词典作答。 */
+function labelTranslator(map: Record<string, string>) {
+  const requested: string[][] = []
+  const translateLabels = async (labels: readonly string[]) => {
+    requested.push([...labels])
+    return labels.map((label) => map[label] ?? label)
+  }
+  return { translateLabels, requested }
+}
+
 describe('composeOverlayPlan：译文与图的覆盖计划装配', () => {
   it('检出图块、按几何区域定位并渲染，得到一张图', async () => {
     const { render, sources } = renderStub()
@@ -243,16 +253,6 @@ describe('composeOverlayPlan · 图内节点文案翻译', () => {
     ]
   }
 
-  /** 节点文案翻译替身：记录每次请求的标签，按词典作答。 */
-  function labelTranslator(map: Record<string, string>) {
-    const requested: string[][] = []
-    const translateLabels = async (labels: readonly string[]) => {
-      requested.push([...labels])
-      return labels.map((label) => map[label] ?? label)
-    }
-    return { translateLabels, requested }
-  }
-
   it('送渲染的是替换后源码，节点 id 不动，图照常落位', async () => {
     const { render, sources } = renderStub()
     const { translateLabels, requested } = labelTranslator({ 流程甲: 'Process A', 流程乙: 'Process B' })
@@ -262,6 +262,32 @@ describe('composeOverlayPlan · 图内节点文案翻译', () => {
     expect(requested).toEqual([['流程甲', '流程乙']])
     expect(sources[0]).toBe('graph LR\nA[Process A] --> B[Process B]')
     expect(plan.charts).toHaveLength(1)
+  })
+
+  it('带出的是渲染成功的那份源码：译文版被接收时就是译文版，被拒则是兜底那份', async () => {
+    // 消费方要拿这份源码重渲一遍才能比「为什么你渲得出我渲不出」，取错一份就变成自造差异。
+    const { render, sources } = renderStub()
+    const { translateLabels } = labelTranslator({ 流程甲: 'Process A', 流程乙: 'Process B' })
+
+    const accepted = await composeOverlayPlan(labeledScene(), REGION, { render, translateLabels })
+    expect(accepted.charts[0]?.source).toBe(sources[0])
+    expect(accepted.charts[0]?.source).toContain('Process A')
+
+    const sources2: string[] = []
+    const rejectingRender = async (source: string) => {
+      sources2.push(source)
+      if (source.includes('Process')) {
+        throw new Error('Lexical error')
+      }
+      return { svg: '<svg viewBox="0 0 100 50"></svg>', intrinsic: { width: 100, height: 50 } }
+    }
+
+    const fallback = await composeOverlayPlan(labeledScene(), REGION, {
+      render: rejectingRender,
+      translateLabels,
+    })
+    expect(fallback.charts[0]?.source).toBe(sources2[sources2.length - 1])
+    expect(fallback.charts[0]?.source).toContain('流程甲')
   })
 
   it('翻译抛错时图用原文渲染，不消失', async () => {
@@ -435,3 +461,123 @@ describe('composeOverlayPlan · 图内节点文案翻译', () => {
     expect(plan.charts).toHaveLength(1)
   })
 })
+
+describe('composeOverlayPlan · LLM 修复必经主送', () => {
+  /** 修复替身：记录收到的源码，按给定结果作答。 */
+  function refinerStub(result: string | ((source: string) => string)) {
+    const inputs: string[] = []
+    const refine = async (source: string) => {
+      inputs.push(source)
+      return typeof result === 'string' ? result : result(source)
+    }
+    return { refine, inputs }
+  }
+
+  function failingRefiner(message: string) {
+    return async (): Promise<string> => {
+      throw new Error(message)
+    }
+  }
+
+  it('修复缺席（未注入）时行为与现状一致：尝试序列不带修复痕迹', async () => {
+    const first = renderStub()
+    await composeOverlayPlan(labeledSceneForRefine(), REGION, { render: first.render })
+    const second = renderStub()
+    // 注入一个与首候选逐字节相同的修复结果等价于没修：不该多送一次渲染
+    const { refine } = refinerStub('graph LR\nA[流程甲] --> B[流程乙]')
+    await composeOverlayPlan(labeledSceneForRefine(), REGION, { render: second.render, refine })
+    expect(second.sources).toEqual(first.sources)
+  })
+
+  it('每张图恰调一次修复，吃的是全区域规则归一版', async () => {
+    const { refine, inputs } = refinerStub('flowchart TD\nA[源甲] --> B[源乙]')
+    const { render } = renderStub()
+    await composeOverlayPlan(labeledSceneForRefine(), REGION, { render, refine })
+    expect(inputs).toEqual(['graph LR\nA[流程甲] --> B[流程乙]'])
+  })
+
+  it('修复版主送：先试修复译标签版、再修复原文版，标签对照表改建在修复版上', async () => {
+    // 渲染站拒掉译文版才轮得到修复原文版——两条都在场才证得了尝试次序。
+    const sources: string[] = []
+    const render = async (source: string) => {
+      sources.push(source)
+      if (source.includes('Alpha')) {
+        throw new Error('Lexical error')
+      }
+      return { svg: '<svg viewBox="0 0 100 50"></svg>', intrinsic: { width: 100, height: 50 } }
+    }
+    const { refine } = refinerStub('flowchart TD\nA[源甲] --> B[源乙]')
+    const { translateLabels, requested } = labelTranslator({ 源甲: 'Alpha', 源乙: 'Beta' })
+    const info = vi.fn()
+
+    const plan = await composeOverlayPlan(labeledSceneForRefine(), REGION, {
+      render,
+      refine,
+      translateLabels,
+      logger: { warn: vi.fn(), info },
+    })
+
+    expect(requested).toEqual([['源甲', '源乙']])
+    expect(sources[0]).toBe('flowchart TD\nA[Alpha] --> B[Beta]')
+    expect(sources[1]).toBe('flowchart TD\nA[源甲] --> B[源乙]')
+    expect(plan.charts[0]?.source).toBe(sources[1])
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('LLM 修复版'))
+  })
+
+  it('修复调用抛错时落回规则候选序列，与不注入时的尝试逐字节一致并把原因记进 warn', async () => {
+    const baseline = renderStub()
+    await composeOverlayPlan(labeledSceneForRefine(), REGION, { render: baseline.render })
+
+    const after = renderStub()
+    const warn = vi.fn()
+    await composeOverlayPlan(labeledSceneForRefine(), REGION, {
+      render: after.render,
+      refine: failingRefiner('DeepSeek 请求失败'),
+      logger: { warn, info: vi.fn() },
+    })
+
+    expect(after.sources).toEqual(baseline.sources)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('LLM 修复失败'))
+  })
+
+  it('修复版被渲染站拒绝时继续落规则候选，最终带出的是实际成功的规则版源码', async () => {
+    const sources: string[] = []
+    const render = async (source: string) => {
+      sources.push(source)
+      if (source.startsWith('flowchart')) {
+        throw new Error('Lexical error')
+      }
+      return { svg: '<svg viewBox="0 0 100 50"></svg>', intrinsic: { width: 100, height: 50 } }
+    }
+    const { refine } = refinerStub('flowchart TD\nA[源甲] --> B[源乙]')
+    const info = vi.fn()
+
+    const plan = await composeOverlayPlan(labeledSceneForRefine(), REGION, { render, refine, logger: { warn: vi.fn(), info } })
+
+    expect(plan.charts[0]?.source).toBe('graph LR\nA[流程甲] --> B[流程乙]')
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('规则候选'))
+  })
+
+  it('多条 mermaid 时逐图各修一次', async () => {
+    // 两图之间留一空行观察：检测以空行划界，紧贴无分隔的双声明场景现状只产第一张（既有行为）。
+    const blocks: OverlayBlock[] = [
+      { source: 'graph LR', translation: '', box: { x: 200, y: 100, width: 80, height: 20 } },
+      { source: 'A --> B', translation: '', box: { x: 200, y: 125, width: 140, height: 20 } },
+      { source: '', translation: '', box: { x: 200, y: 150, width: 10, height: 20 } },
+      { source: 'graph TD', translation: '', box: { x: 200, y: 175, width: 80, height: 20 } },
+      { source: 'C --> D', translation: '', box: { x: 200, y: 200, width: 140, height: 20 } },
+    ]
+    const { refine, inputs } = refinerStub((source) => source.replace('-->', '--->'))
+    const { render } = renderStub()
+    await composeOverlayPlan(blocks, REGION, { render, refine })
+    expect(inputs).toHaveLength(2)
+  })
+})
+
+/** 修复用例共用的一块带标签图。 */
+function labeledSceneForRefine(): OverlayBlock[] {
+  return [
+    { source: 'graph LR', translation: '图声明', box: { x: 200, y: 100, width: 80, height: 20 } },
+    { source: 'A[流程甲] --> B[流程乙]', translation: '原文行', box: { x: 200, y: 125, width: 200, height: 20 } },
+  ]
+}

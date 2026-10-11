@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   captureThumbnailSize,
@@ -214,5 +216,15 @@ describe('dipRectToFrameRect', () => {
     expect(dipRectToFrameRect({ x: 10, y: NaN, width: 100, height: 50 }, primary, frame)).toBeNull()
     expect(dipRectToFrameRect({ x: 10, y: 10, width: NaN, height: 50 }, primary, frame)).toBeNull()
     expect(dipRectToFrameRect({ x: 10, y: 10, width: 100, height: NaN }, primary, frame)).toBeNull()
+  })
+})
+
+describe('矩形结构的真源', () => {
+  it('壳层不自持 Rect 声明，桌面帧与渲染站服务端共用共享层那一份', () => {
+    // 结构兼容使两份同形 interface 互相赋值都合法，tsc 因此拦不住形状分叉：
+    // 日后给共享层那份补字段而漏掉壳层时，编译期一片安静，只能靠这道断言出声。
+    const shell = readFileSync(join(import.meta.dirname, '../src/freeze/geometry.ts'), 'utf8')
+
+    expect(shell).not.toMatch(/^\s*export\s+(interface|type)\s+Rect\b/m)
   })
 })

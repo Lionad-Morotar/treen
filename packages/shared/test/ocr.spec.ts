@@ -5,18 +5,13 @@ import {
   normalizedRoi,
   readingOrder,
   type OcrObservation,
+  type Rect,
 } from '../src/translation/ocr'
-import type { DisplayLike, Rect } from '../src/freeze/geometry'
-import type { FreezeFrame } from '../src/freeze/controller'
 
-const display: DisplayLike = {
-  id: 1,
-  scaleFactor: 2,
-  bounds: { x: 0, y: 0, width: 400, height: 200 },
-}
+const display = { bounds: { x: 0, y: 0, width: 400, height: 200 } }
 
-function frame(dataUrl = 'data:image/png;base64,AAAA'): FreezeFrame {
-  return { id: 'src', displayId: '1', size: { width: 800, height: 400 }, dataUrl }
+function frame(dataUrl = 'data:image/png;base64,AAAA') {
+  return { dataUrl }
 }
 
 function obs(text: string, boundingBox: Rect, confidence = 0.9): OcrObservation {

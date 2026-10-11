@@ -150,4 +150,11 @@ describe('planOverlay：译文与图同屏共存', () => {
     expect(plan.charts).toHaveLength(0)
     expect(plan.texts.map((text) => text.lines.join(''))).toEqual(['好盒'])
   })
+
+  it('渲染成功的源码随版位透出，缺省即不带该字段', () => {
+    const withSource = planOverlay({ texts: [], charts: [{ ...chart, source: 'graph LR\nA --> B' }] })
+
+    expect(withSource.charts[0]?.source).toBe('graph LR\nA --> B')
+    expect(planOverlay({ texts: [], charts: [chart] }).charts[0]?.source).toBeUndefined()
+  })
 })

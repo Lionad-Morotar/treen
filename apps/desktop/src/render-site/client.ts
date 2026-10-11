@@ -1,5 +1,5 @@
 import { RENDER_SITE_ORIGIN, RENDER_SITE_ROUTES } from '@treen/ipc'
-import type { Size } from '../overlay/layout'
+import type { MermaidRenderResult } from '@treen/shared/render'
 
 /**
  * 常驻渲染站的 HTTP 客户端：mermaid 源码进，SVG 与内容固有尺寸出。
@@ -9,12 +9,6 @@ import type { Size } from '../overlay/layout'
  *
  * 超时用 AbortSignal 兜住悬挂连接：翻译链路里一次卡死会把整条覆盖渲染一起拖住。
  */
-
-/** 渲染成功的结果：SVG 串 + 内容固有像素尺寸（供 contain 适配）。 */
-export interface MermaidRenderResult {
-  svg: string
-  intrinsic: Size
-}
 
 export interface RenderSiteClientOptions {
   /** 站址；缺省取契约包的基准 URL（测试可指向替身） */

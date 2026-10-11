@@ -31,6 +31,12 @@ export interface TranslationLogger {
 /** 把一份请求体发给模型并取回 assistant 的原始文本内容。 */
 export type TranslateCompleter = (body: unknown) => Promise<string>
 
+/**
+ * `TranslateCompleter` 的语义正名：出口本身与翻译无关，只是 chat/completions 的一跳，
+ * mermaid 修复（mermaid/refine.ts）复用同一条出口。保留旧名是历史调用面不改写，新代码用此别名。
+ */
+export type ChatCompleter = TranslateCompleter
+
 /** 把 items 按 size 切分；size 非正数即拒绝，避免无声的不前进。 */
 export function chunk<T>(items: readonly T[], size: number): T[][] {
   if (!Number.isInteger(size) || size < 1) {

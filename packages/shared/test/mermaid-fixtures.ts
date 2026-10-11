@@ -4,7 +4,13 @@
  * `SCREENSHOT_SOURCE` 取自 zRefs/image.png（VS Code 截图）主编辑区那段未渲染的 mermaid 源码，
  * 逐行对照截图像素抄录，是「真样本」；`SCREENSHOT_OCR_ROI` 是同一段经 mac-ocr 在框选 ROI 形态下的
  * 真实识别输出（含 OCR 劣化：整角括号、<br/›、粘连），两者对照能同时钉住「正常源」与「劣化源」两条路。
+ *
+ * 真机样本只有这一份：桌面壳里走 mermaid.parse 真校验的那两个 spec 跨包引它，复制成桌面侧的第二份
+ * 就会让两边的样本各自漂移——真样本的价值全在它是同一段真实输出。
  */
+
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 /** 真截图里那段 mermaid 源码的原文（人眼逐行核对）。 */
 export const SCREENSHOT_SOURCE = `mermaid
@@ -28,3 +34,13 @@ B2 --> C`
 
 /** 同屏正文里提到 graph 的一句（真样本里的反例）。 */
 export const PROSE_MENTIONING_GRAPH = '生成脚本是前案带过来的 data/prior-261007/analyze_deep.py，comb 模板 graph 在给定区间以 0.02 BPM 步进扫，总和最大者即最大似然拟合'
+
+/**
+ * S14 真机缺陷样本：OCR 完全没认出声明行的 flowchart（含垃圾行与各类箭头劣化）。
+ * 它是磁盘上的原始 OCR 输出，不由本模块内联；读文件只发生在这里一次，消费方 import 常量即可，
+ * 各自拼路径会让任何一处目录调整都变成 ENOENT。
+ */
+export const BUG_OCR_SAMPLE = readFileSync(
+  join(import.meta.dirname, 'fixtures/ocr-graph-missing-declaration.txt'),
+  'utf8',
+)

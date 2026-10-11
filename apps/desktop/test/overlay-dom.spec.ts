@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { JSDOM } from 'jsdom'
 import { describe, expect, it } from 'vitest'
-import type { OverlayPlan } from '../src/overlay/layout'
+import type { OverlayPlan } from '../src/overlay'
 
 /**
  * overlay.html 的渲染面测试：把真实文件载进 jsdom（执行内联脚本），调用主进程注入用的

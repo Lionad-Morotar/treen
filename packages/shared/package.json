@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "共享配置层：环境读取与日志脱敏",
+  "description": "共享层：环境读取、设置与日志脱敏、OCR 与翻译的纯逻辑、几何基元、图表检测归一化与覆盖装配、渲染结果类型",
   "main": "./src/index.ts",
   "exports": {
     ".": {
@@ -13,12 +13,33 @@
     "./text-metrics": {
       "types": "./src/text-metrics.ts",
       "default": "./src/text-metrics.ts"
+    },
+    "./translation": {
+      "types": "./src/translation/index.ts",
+      "default": "./src/translation/index.ts"
+    },
+    "./geometry": {
+      "types": "./src/geometry.ts",
+      "default": "./src/geometry.ts"
+    },
+    "./render": {
+      "types": "./src/render.ts",
+      "default": "./src/render.ts"
+    },
+    "./mermaid": {
+      "types": "./src/mermaid/index.ts",
+      "default": "./src/mermaid/index.ts"
+    },
+    "./overlay": {
+      "types": "./src/overlay/index.ts",
+      "default": "./src/overlay/index.ts"
     }
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "dotenv": "^18.0.6"
+    "dotenv": "^18.0.6",
+    "mac-ocr": "^1.1.1"
   }
 }
