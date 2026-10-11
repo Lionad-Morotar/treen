@@ -1,6 +1,6 @@
 import { isDiagramDeclaration } from './detect'
 import { normalizeMermaid } from './normalize'
-import type { ChatCompleter } from '../translation/deepseek'
+import { DEEPSEEK_MODEL, type ChatCompleter } from '../translation/deepseek'
 
 /**
  * mermaid 源码的 LLM 修复（DeepSeek）纯逻辑：请求体构造、返回解析与可用性裁决。
@@ -12,8 +12,12 @@ import type { ChatCompleter } from '../translation/deepseek'
  * 与批量翻译同构：协议形态与判断在这层可纯 Node 单测，网络出口经注入（deepseek-client.ts）。
  */
 
-/** 修复模型档（provisional）：与翻译同域同档，升档只改这一处。 */
-export const REFINE_MODEL = 'deepseek-flash'
+/**
+ * 修复模型档（provisional）：从现役 ID 派生而非复制字面量——模型 ID 会轮换
+ * （deepseek-chat / deepseek-reasoner 废弃在前），复制字面量会让轮换漏掉这条链并静默失效。
+ * 日后若修复要单独升 pro，改这里为显式 ID 并在决策台账留痕。
+ */
+export const REFINE_MODEL = DEEPSEEK_MODEL
 
 /**
  * 修复要的是确定性而非创造性：比翻译的 0.2 更低。
@@ -30,7 +34,14 @@ const REFINE_MAX_TOKENS = 4096
  */
 export const REFINE_MAX_SOURCE_CHARS = 12_000
 
-const FENCE_PATTERN = /```(?:mermaid)?\s*\n?([\s\S]*?)```/i
+/** 代码围栏（任意语言标签，含 `json` 这种把约定 JSON 又包一层的漂移；只认首个围栏对）。 */
+const FENCE_PATTERN = /```[a-z0-9_-]*\s*\n?([\s\S]*?)```/i
+
+/** 被围栏整段包住时取出内部文本，语言标签不许残留进候选。 */
+function unwrapFence(content: string): string {
+  const fenced = FENCE_PATTERN.exec(content)
+  return fenced === null ? content : (fenced[1] ?? '')
+}
 
 /**
  * 构造一次 mermaid 修复请求。
@@ -70,16 +81,19 @@ export function buildRefineBody(source: string): unknown {
  *
  * 过归一化不是保险而是纪律的一部分：`%%{init}%%` 剥离是「外部内容不得决定 Treen 视觉」的
  * 唯一执行点，LLM 输出同属不可信外部内容；模型把箭头写回劣化形态时规则归一也是免费的。
- * 解析兼容三种漂移形态——约定对象、裸字符串 JSON、围栏包裹的非 JSON——都收，因为拒掉的
- * 代价只是落回规则候选（不坏于现状），而漏收的代价是必经步骤白付一次调用。
+ * 解析兼容围栏包裹（任意语言标签）、约定对象、裸字符串 JSON 各形态及其组合都收，
+ * 因为拒掉的代价只是落回规则候选（不坏于现状），而漏收的代价是必经步骤白付一次调用。
  * 拒绝条件：解不出源码、归一后为空、无声明行（修复版必须带声明，默认声明的补全是候选层的
  * 事、不指望模型顺手补回）、超长。返回 null 由调用方落回兜底序列。
  */
 export function parseRefineResponse(content: string): string | null {
-  let candidate: string | null = null
+  // 先剥围栏再解 JSON：模型最常把约定的 `{"source": ...}` 又包一层 ```json，
+  // 顺序反过来会让语言标签残留进候选、声明行判据误拒一份本可用的修复。
+  const unwrapped = unwrapFence(content)
+  let candidate: string
   let parsed: unknown
   try {
-    parsed = JSON.parse(content)
+    parsed = JSON.parse(unwrapped)
   } catch {
     parsed = null
   }
@@ -87,19 +101,10 @@ export function parseRefineResponse(content: string): string | null {
     candidate = parsed
   } else if (parsed !== null && typeof parsed === 'object') {
     const source = (parsed as { source?: unknown }).source
-    if (typeof source === 'string') {
-      candidate = source
-    }
-  }
-  if (candidate === null) {
-    const fenced = FENCE_PATTERN.exec(content)
-    if (fenced !== null) {
-      candidate = fenced[1] ?? ''
-    } else {
-      // 非 JSON 非围栏：整段当源码候选尝试救回——拒与收的判据统一交给下游归一化与声明行，
-      // 不在这里多猜一层「像不像回答」。
-      candidate = content
-    }
+    // 对象里没有可用 source：整段（剥围栏后）仍当源码候选试救回，收拒交给下游统一判据。
+    candidate = typeof source === 'string' ? source : unwrapped
+  } else {
+    candidate = unwrapped
   }
 
   const normalized = normalizeMermaid(candidate)

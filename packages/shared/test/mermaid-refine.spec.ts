@@ -45,6 +45,10 @@ describe('parseRefineResponse：返回解析与回退', () => {
     expect(parsed).toContain('flowchart LR')
   })
 
+  it('约定 JSON 又被包进 ```json 围栏（最常见的漂移形态）：剥围栏后仍解析，语言标签不许残留进候选', () => {
+    expect(parseRefineResponse('```json\n{"source": "flowchart TD\\nA-->B"}\n```')).toBe('flowchart TD\nA-->B')
+  })
+
   it('解析不出源码、归一后为空、或没有声明行，一律拒绝（返回 null 由调用方落回兜底）', () => {
     expect(parseRefineResponse('not json at all')).toBeNull()
     expect(parseRefineResponse('{"source": ""}')).toBeNull()
