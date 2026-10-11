@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { OcrEngine } from '@treen/shared/translation'
 import { runPipeline, runTranslate, runTranslateRequest } from '../server/utils/dev-pipeline'
+import { IMAGE, recognize } from './pipeline-fixtures'
 
 /**
  * 本仓 .env.local 带着真密钥，单测进程因此恒为「已配置」，而「未配密钥」恰恰是要覆盖的分支。
@@ -47,26 +47,6 @@ describe('未配 DEEPSEEK_KEY 时的翻译出口', () => {
  * 且被装配层吞为「落回规则候选」的诊断——图不因出口缺密钥而消失，链路不因调试页缺配置而 503 整挂。
  */
 describe('未配 DEEPSEEK_KEY 时的 LLM 修复链路', () => {
-  const SIZE = { width: 500, height: 300 }
-
-  function pngHeader(width: number, height: number): Uint8Array {
-    const bytes = new Uint8Array(24)
-    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
-    const view = new DataView(bytes.buffer)
-    view.setUint32(16, width)
-    view.setUint32(20, height)
-    return bytes
-  }
-
-  const IMAGE = `data:image/png;base64,${Buffer.from(pngHeader(SIZE.width, SIZE.height)).toString('base64')}`
-
-  const recognize: OcrEngine = async () => ({
-    observations: [
-      { text: 'graph LR', confidence: 0.9, boundingBox: { x: 200 / SIZE.width, y: 100 / SIZE.height, width: 80 / SIZE.width, height: 20 / SIZE.height } },
-      { text: 'A --> B', confidence: 0.9, boundingBox: { x: 200 / SIZE.width, y: 125 / SIZE.height, width: 140 / SIZE.width, height: 20 / SIZE.height } },
-    ],
-  })
-
   it('有图要修才问密钥；缺密钥时图走规则候选照常出来，诊断解释落回原因', async () => {
     const result = await runPipeline(
       { image: IMAGE, translateText: false },

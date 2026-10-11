@@ -1,45 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { MermaidRenderResult } from '@treen/shared/render'
-import type { OcrEngine, TranslateCompleter } from '@treen/shared/translation'
+import type { TranslateCompleter } from '@treen/shared/translation'
 import { runPipeline } from '../server/utils/dev-pipeline'
-
-const SIZE = { width: 500, height: 300 }
-
-/**
- * 一屏三行：正文 + 两行图源码。几何取自共享层装配单测里已被验证能检出一张图的那一屏，
- * 故这里的断言只关心「渲染站侧把它们拼起来了」，几何扩张本身的算法不重复校验。
- */
-const LINES = [
-  { text: 'Title', box: { x: 0, y: 0, width: 60, height: 20 } },
-  { text: 'graph LR', box: { x: 200, y: 100, width: 80, height: 20 } },
-  { text: 'A --> B', box: { x: 200, y: 125, width: 140, height: 20 } },
-]
-
-/** 造一个只有签名与 IHDR 的 PNG 头：装配只从字节里读尺寸，不作图。 */
-function pngHeader(width: number, height: number): Uint8Array {
-  const bytes = new Uint8Array(24)
-  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
-  const view = new DataView(bytes.buffer)
-  view.setUint32(16, width)
-  view.setUint32(20, height)
-  return bytes
-}
-
-const IMAGE = `data:image/png;base64,${Buffer.from(pngHeader(SIZE.width, SIZE.height)).toString('base64')}`
-
-/** 识别替身：按整幅图的归一化坐标交出三行观察，不碰二进制。 */
-const recognize: OcrEngine = async () => ({
-  observations: LINES.map((line) => ({
-    text: line.text,
-    confidence: 0.9,
-    boundingBox: {
-      x: line.box.x / SIZE.width,
-      y: line.box.y / SIZE.height,
-      width: line.box.width / SIZE.width,
-      height: line.box.height / SIZE.height,
-    },
-  })),
-})
+import { IMAGE, recognize } from './pipeline-fixtures'
 
 /** 翻译替身：记下每次收到的文本，按 `译：<原文>` 作答。 */
 function recordingCompleter(sent: string[][]): TranslateCompleter {
@@ -226,6 +189,20 @@ describe('runPipeline · LLM 修复接线', () => {
     expect(result.plan.charts).toHaveLength(1)
     expect(result.diagnostics.some((entry) => entry.includes('LLM 修复失败'))).toBe(true)
     expect(result.diagnostics.some((entry) => entry.includes('命中来源为规则候选'))).toBe(true)
+  })
+
+  it('超长修复输出的诊断条目被截短：留痕区不被极端吐长淹没，截断量照实标注', async () => {
+    const sent: string[][] = []
+    const huge = `flowchart TD\n${'x'.repeat(50_000)}`
+    const { refine } = refinerStub(huge)
+    const { render } = recordingRender()
+
+    const result = await runPipeline({ image: IMAGE }, { recognize, complete: recordingCompleter(sent), render, refine })
+
+    const entry = result.diagnostics.find((line) => line.includes('LLM 修复输出'))
+    expect(entry).toBeDefined()
+    expect(entry!.length).toBeLessThan(4500)
+    expect(entry).toContain('截短')
   })
 
   it('图表开关关闭时不触发修复调用', async () => {

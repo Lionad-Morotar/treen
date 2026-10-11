@@ -365,6 +365,18 @@ function labelTranslator(deps: DevPipelineDeps): (labels: readonly string[]) => 
 }
 
 /**
+ * 诊断对照条目的源码上限：整屏真实图远低于此（约 66 行），超过即异常吐长——照实截断并标注
+ * 原始长度，诊断面板要能扫读，不能被单条巨量源码淹没。
+ */
+const DIAGNOSTIC_SOURCE_LIMIT = 4000
+
+function clipForDiagnostics(source: string): string {
+  return source.length <= DIAGNOSTIC_SOURCE_LIMIT
+    ? source
+    : `${source.slice(0, DIAGNOSTIC_SOURCE_LIMIT)}\n…（已截短，原文 ${source.length} 字符）`
+}
+
+/**
  * 带前后对照的 LLM 修复动作：本体取注入替身或共享层 refiner（出口与正文翻译同一条惰性链路），
  * 包装层把每次修复的输入与输出记进诊断——「这张图是不是修复救回的、修复改了什么」必须在这条
  * 端点上肉眼可分辨，这是修复步骤可观察性的全部要点。缺密钥在真有图要修时才成为错误，
@@ -376,9 +388,9 @@ function tracingRefiner(
 ): (source: string) => Promise<string> {
   const base = deps.refine ?? createMermaidRefiner({ complete: lazyCompleter(deps) })
   return async (source) => {
-    logger.info(`LLM 修复输入源码：\n${source}`)
+    logger.info(`LLM 修复输入源码：\n${clipForDiagnostics(source)}`)
     const refined = await base(source)
-    logger.info(`LLM 修复输出源码：\n${refined}`)
+    logger.info(`LLM 修复输出源码：\n${clipForDiagnostics(refined)}`)
     return refined
   }
 }

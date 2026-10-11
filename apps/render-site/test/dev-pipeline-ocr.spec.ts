@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { imageSizeOf, runOcr } from '../server/utils/dev-pipeline'
+import { jpegHeader, pngHeader } from './pipeline-fixtures'
 
 const fixture = fileURLToPath(new URL('../../../zRefs/image.png', import.meta.url))
 
@@ -11,28 +12,6 @@ const fixture = fileURLToPath(new URL('../../../zRefs/image.png', import.meta.ur
  * 二进制的测试。
  */
 const available = process.platform === 'darwin' && existsSync(fixture)
-
-/** 造一个只有签名与 IHDR 的 PNG 头：尺寸解析器只读这两处，故足以驱动解析分支。 */
-function pngHeader(width: number, height: number): Uint8Array {
-  const bytes = new Uint8Array(24)
-  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
-  const view = new DataView(bytes.buffer)
-  view.setUint32(16, width)
-  view.setUint32(20, height)
-  return bytes
-}
-
-/** 造一个只有 SOI 与 SOF0 的 JPEG：帧头即尺寸来源。 */
-function jpegHeader(width: number, height: number): Uint8Array {
-  return new Uint8Array([
-    0xff, 0xd8,
-    0xff, 0xc0, 0x00, 0x11, 0x08,
-    (height >> 8) & 0xff, height & 0xff,
-    (width >> 8) & 0xff, width & 0xff,
-    0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0xff, 0xd9,
-  ])
-}
 
 describe('imageSizeOf', () => {
   it('从 PNG 的 IHDR 读出像素尺寸', () => {
