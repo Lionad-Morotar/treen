@@ -133,22 +133,21 @@ export function chartSourceCandidates(lines: readonly string[]): Array<{ source:
 
 /**
  * 一张图的「标签 → 译文」对照表；翻译不适用（未注入、无标签、调用失败）时为 null，
- * 候选照常用原文。标签集合取首个候选（全区域行）——后续候选是它的裁剪子集，
- * 一张图只需一次外部调用，裁剪候选不必重译。
+ * 候选照常用原文。标签集合取自**主送源码**（修复在场即修复版，否则全区域候选）——
+ * 一张图只需一次外部调用，其余候选复用这张表。
  */
 async function chartLabelLookup(
-  sources: readonly string[],
+  primarySource: string | undefined,
   translateLabels: ((labels: readonly string[]) => Promise<string[]>) | undefined,
   logger?: { warn(message: string): void; info(message: string): void },
 ): Promise<Map<string, string | null> | null> {
-  if (translateLabels === undefined || sources.length === 0) {
+  if (translateLabels === undefined || primarySource === undefined) {
     return null
   }
   try {
-    // 候选按「语句行过滤 → 全区域」排列，取首个建对照表（S14 起首个不再恒为后续候选的超集）：
-    // 被过滤掉的垃圾行里的括号文本不进集合，省下白付的 token；某候选若含对照表外的标签，
-    // mapNodeLabels 对缺失标签保留原文，图不受影响。
-    const labels = collectNodeLabels(sources[0] ?? '')
+    // 主送源是修复版时，被修复删掉的垃圾行里的括号文本不进集合，省下白付的 token；
+    // 兜底候选若含对照表外的标签，mapNodeLabels 对缺失标签保留原文，图不受影响。
+    const labels = collectNodeLabels(primarySource)
     // 一条节点标签都没有（纯连线图）：那次外部调用也省下。
     if (labels.length === 0) {
       return null
@@ -234,10 +233,9 @@ async function composeCharts(
     const candidateSources = chartSourceCandidates(lines)
     // 链上必经一步：对这张图的全区域规则归一版做恰一次 LLM 修复；不可用只落回规则候选。
     const refined = await refineChartSource(refine, candidateSources[0], logger)
-    // 标签对照表改建在修复版上（修复在场时）：主送源决定要译的标签集，规则兜底候选复用同一份表——
+    // 标签对照表改建在主送源上（修复在场即修复版）：规则兜底候选复用同一份表——
     // 其标签若不在表内，mapNodeLabels 保留原文，不坏于现状。
-    const ruleSources = candidateSources.map((attempt) => attempt.source)
-    const lookup = await chartLabelLookup(refined === null ? ruleSources : [refined, ...ruleSources], translateLabels, logger)
+    const lookup = await chartLabelLookup(refined ?? candidateSources[0]?.source, translateLabels, logger)
     const attempts: Array<{ source: string; memberIndices: number[]; refined: boolean }> = []
     const pushAttempts = (source: string, memberIndices: number[], isRefined: boolean): void => {
       if (lookup !== null) {
@@ -251,6 +249,10 @@ async function composeCharts(
       attempts.push({ source, memberIndices, refined: isRefined })
     }
     if (refined !== null) {
+      // 修复版命中时版位仍按全区域成员算，是刻意接受的折衷：LLM 输出与观察行没有逐行对应
+      // （它可删行可改行），无法像裁剪候选那样带回 memberIndices 精算版位。代价是修复删掉
+      // 尾部混入的正文行时，图盒会虚高且那些行的译文被版位抑制；收益基准是「没有修复这一步，
+      // 这张图本来就渲染失败、整张消失」——救回场景下位置略偏优先于图不存在。
       pushAttempts(refined, candidateSources[0]?.memberIndices ?? [], true)
     }
     for (const attempt of candidateSources) {
