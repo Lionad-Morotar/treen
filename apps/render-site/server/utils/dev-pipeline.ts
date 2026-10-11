@@ -3,6 +3,7 @@ import { readDeepSeekKey } from '@treen/shared'
 import type { Rect } from '@treen/shared/geometry'
 import type { MermaidRenderResult } from '@treen/shared/render'
 import { composeOverlayPlan, type OverlayPlan } from '@treen/shared/overlay'
+import { createMermaidRefiner } from '@treen/shared/mermaid'
 import {
   createBatchTranslator,
   createOcrReader,
@@ -20,7 +21,8 @@ import { DevRouteError, runDevRoute, type DevRouteOutcome } from './dev-gate'
  * `/api/dev/*` 各端点的主体：OCR 取字、批量翻译、以及串起来的整链路装配。
  *
  * 所有能力都从 `@treen/shared` 取真实实现，这里只做三件端点独有的事：把上传的图像归一成
- * 生产 OCR 认得的形态、把图像尺寸换算成坐标语义、把链路里的 warn 级日志收成 diagnostics。
+ * 生产 OCR 认得的形态、把图像尺寸换算成坐标语义、把链路里的 warn 与 info 日志收成 diagnostics
+ * （info 承载 LLM 修复的输入输出对照与命中来源——修复步骤在调试页必须肉眼可分辨）。
  * 于是不存在「调试页跑的是另一份实现」——调试页观察不到的问题，生产上一定同样存在。
  *
  * OCR 与翻译的真实出口（Apple Vision 二进制、DeepSeek 网络调用）都是运行时才建立的依赖，
@@ -269,6 +271,8 @@ export interface DevPipelineRequest {
 export interface DevPipelineDeps extends DevOcrDeps, DevTranslateDeps {
   /** 图表渲染方；缺省经本站 /api/render */
   render?: DevChartRenderer
+  /** LLM 修复动作；缺省用共享层 refiner 走正文同款出口（测试注入替身） */
+  refine?: (source: string) => Promise<string>
 }
 
 export interface DevPipelineTimings {
@@ -282,7 +286,8 @@ export interface DevPipelineResult {
   translations: string[]
   plan: OverlayPlan
   timings: DevPipelineTimings
-  /** 链路里的 warn 级日志：几何求不到区域、渲染被拒等「为什么这张图没出来」的线索 */
+  /** 链路日志（warn 与 info 都收）：几何求不到区域、渲染被拒等「为什么这张图没出来」的线索，
+   * 以及 LLM 修复的输入输出对照与「命中来源是修复版还是规则候选」的留痕 */
   diagnostics: string[]
 }
 
@@ -303,12 +308,16 @@ export async function runPipeline(
   const { blocks, size, elapsedMs: ocrMs } = await readOcrBlocks(toDataUrl(request.image), deps)
   const texts = blocks.map((block) => block.text)
 
+  // warn 与 info 都收进 diagnostics：info 承载 LLM 修复对照与命中来源这类「修复链路干了什么」
+  // 的留痕——调试页的 observability 要求它们可见，不是可丢弃的噪音。
   const diagnostics: string[] = []
   const logger = {
     warn: (message: string) => {
       diagnostics.push(message)
     },
-    info: () => {},
+    info: (message: string) => {
+      diagnostics.push(message)
+    },
   }
 
   let translations: string[]
@@ -334,6 +343,8 @@ export async function runPipeline(
     {
       render: translateCharts ? (deps.render ?? createSiteChartRenderer()) : undefined,
       translateLabels: translateCharts && translateText ? labelTranslator(deps) : undefined,
+      // 修复随图表开关必经：没有渲染就没有图，也没有要修的东西；有图时每图恰调一次。
+      refine: translateCharts ? tracingRefiner(deps, logger) : undefined,
       texts: translateText,
       logger,
     },
@@ -351,6 +362,25 @@ export async function runPipeline(
 /** 节点文案翻译复用正文的批量翻译器：同一份门控与降级，不另建一条出口。 */
 function labelTranslator(deps: DevPipelineDeps): (labels: readonly string[]) => Promise<string[]> {
   return createBatchTranslator({ complete: lazyCompleter(deps) })
+}
+
+/**
+ * 带前后对照的 LLM 修复动作：本体取注入替身或共享层 refiner（出口与正文翻译同一条惰性链路），
+ * 包装层把每次修复的输入与输出记进诊断——「这张图是不是修复救回的、修复改了什么」必须在这条
+ * 端点上肉眼可分辨，这是修复步骤可观察性的全部要点。缺密钥在真有图要修时才成为错误，
+ * 且由装配层吞为一条落回诊断，图不会因修复出口缺失而消失。
+ */
+function tracingRefiner(
+  deps: DevPipelineDeps,
+  logger: { warn(message: string): void; info(message: string): void },
+): (source: string) => Promise<string> {
+  const base = deps.refine ?? createMermaidRefiner({ complete: lazyCompleter(deps) })
+  return async (source) => {
+    logger.info(`LLM 修复输入源码：\n${source}`)
+    const refined = await base(source)
+    logger.info(`LLM 修复输出源码：\n${refined}`)
+    return refined
+  }
 }
 
 function requireObject(body: unknown): Record<string, unknown> {

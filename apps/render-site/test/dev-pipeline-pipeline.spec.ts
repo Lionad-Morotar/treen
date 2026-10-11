@@ -175,3 +175,66 @@ describe('runPipeline', () => {
     ])
   })
 })
+
+describe('runPipeline · LLM 修复接线', () => {
+  /** 修复替身：记录收到的源码，按给定结果作答。 */
+  function refinerStub(result: string | ((source: string) => string)) {
+    const inputs: string[] = []
+    const refine = async (source: string) => {
+      inputs.push(source)
+      return typeof result === 'string' ? result : result(source)
+    }
+    return { refine, inputs }
+  }
+
+  function recordingRender() {
+    const sources: string[] = []
+    const render = async (source: string) => {
+      sources.push(source)
+      return svgResult()
+    }
+    return { render, sources }
+  }
+
+  it('有图时逐图恰修一次、吃全区域归一版，修复前后对照与命中来源进 diagnostics', async () => {
+    const sent: string[][] = []
+    const { refine, inputs } = refinerStub('flowchart LR\nA --> B')
+    const { render, sources } = recordingRender()
+
+    const result = await runPipeline(
+      { image: IMAGE },
+      { recognize, complete: recordingCompleter(sent), render, refine },
+    )
+
+    expect(inputs).toEqual(['graph LR\nA --> B'])
+    expect(sources[0]).toBe('flowchart LR\nA --> B')
+    expect(result.diagnostics.some((entry) => entry.includes('LLM 修复输入'))).toBe(true)
+    expect(result.diagnostics.some((entry) => entry.includes('LLM 修复输出'))).toBe(true)
+    expect(result.diagnostics.some((entry) => entry.includes('命中来源为 LLM 修复版'))).toBe(true)
+  })
+
+  it('修复抛错时落回规则候选：尝试序列与无修复一致，原因与命中来源都进 diagnostics', async () => {
+    const sent: string[][] = []
+    const refine = async (): Promise<string> => {
+      throw new Error('DeepSeek 请求失败')
+    }
+    const { render, sources } = recordingRender()
+
+    const result = await runPipeline({ image: IMAGE }, { recognize, complete: recordingCompleter(sent), render, refine })
+
+    expect(sources).toEqual(['graph LR\nA --> B'])
+    expect(result.plan.charts).toHaveLength(1)
+    expect(result.diagnostics.some((entry) => entry.includes('LLM 修复失败'))).toBe(true)
+    expect(result.diagnostics.some((entry) => entry.includes('命中来源为规则候选'))).toBe(true)
+  })
+
+  it('图表开关关闭时不触发修复调用', async () => {
+    const { refine, inputs } = refinerStub('flowchart LR\nA --> B')
+    const result = await runPipeline(
+      { image: IMAGE, translateCharts: false },
+      { recognize, complete: recordingCompleter([]), refine },
+    )
+    expect(inputs).toHaveLength(0)
+    expect(result.plan.charts).toHaveLength(0)
+  })
+})
